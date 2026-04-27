@@ -58,14 +58,14 @@ described in Section 3 below.
 The **literal listener** selects an image from the option set based on the semantic
 similarity of the utterance to each image, tempered by a per-listener sharpness parameter:
 
-\[
+$$
 L_0(c \mid u, O, \ell) = \text{softmax}_{j \in O}\big(\beta_\ell \cdot \cos(z(u), x(j))\big)
-\]
+$$
 
 - **β_ℓ** is the inverse temperature for listener ℓ. High β means a sharp decision that
   concentrates probability on the most similar image; low β means a flat, noisy distribution.
 - β_ℓ is given a hierarchical prior:
-  \[\beta_\ell \sim \text{LogNormal}(\mu_\beta, \sigma_\beta)\]
+  $$\beta_\ell \sim \text{LogNormal}(\mu_\beta, \sigma_\beta)$$
   This partial-pools calibration estimates across listeners while allowing individual variation.
 
 The listener's **chosen image c_t** (not just success/failure) provides a 12-way
@@ -93,15 +93,15 @@ image i have converged.
 
 This is given a two-level hierarchical prior:
 
-\[
+$$
 \mu_i \sim \mathcal{N}(0, I) \quad \text{[global prototype for image } i\text{, fitted across all games]}
-\]
-\[
+$$
+$$
 \delta_{g,i} \sim \mathcal{N}(0, \sigma^2_\text{game} \cdot I)
-\]
-\[
+$$
+$$
 m_{g,i} = \mu_i + \delta_{g,i}
-\]
+$$
 
 - **μ_i** is the community-level prototype for image i: the typical region of semantic
   space where descriptions of that image tend to land across all games. This corresponds to
@@ -130,9 +130,9 @@ On each trial t, two observed signals update the posterior over m_{g,i}:
 
 **Signal 1 — Listener choice c_t** (primary, no approximation needed):
 
-\[
+$$
 P(c_t \mid u_t, O_t, \ell_t) = L_0(c_t \mid u_t, O_t, \ell_t)
-\]
+$$
 
 This is the multinomial log-likelihood from the fitted listener model. It provides direct
 evidence about whether the utterance was communicatively effective given the current option
@@ -145,16 +145,16 @@ Rather than computing P(u_t | m_{g,i}) via a full RSA speaker distribution over 
 possible strings (intractable for free text), the observed utterance embedding is treated
 as a noisy sample from the latent convention:
 
-\[
+$$
 z(u_t) \sim \mathcal{N}(m_{g,i_t},\ \sigma^2_t \cdot I)
-\]
+$$
 
 The **accuracy-dependent variance** σ²_t is the mechanism by which communicative success
 modulates the update:
 
-\[
+$$
 \sigma^2_t = \sigma^2_\text{min} + \frac{\sigma^2_\text{max} - \sigma^2_\text{min}}{\text{clip}(s_t, \varepsilon, 1)}
-\]
+$$
 
 where s_t = L_0(i_t | u_t, O_t, ℓ_t) is the model-implied probability that the listener
 correctly identifies the target (computed from the fitted L_0).
@@ -177,9 +177,9 @@ is noted as a discussion point below.
 
 The full posterior over the convention for image i in game g is:
 
-\[
+$$
 p(m_{g,i} \mid D_{g,i}) \;\propto\; p(m_{g,i}) \cdot \prod_t p(c_t \mid u_t, O_t, \ell_t) \cdot p(z(u_t) \mid m_{g,i}, \sigma^2_t)
-\]
+$$
 
 where D_{g,i} = {(u_t, c_t, O_t, ℓ_t)} is all observations for image i in game g.
 
@@ -235,9 +235,9 @@ and be checked post-fitting on held-out games:
 A learnable linear projection P ∈ R^{d×D} (d ≪ D) maps CLIP embeddings to a
 task-relevant subspace:
 
-\[
+$$
 L_0(c \mid u, O, \ell) = \text{softmax}_{j \in O}\big(\beta_\ell \cdot \cos(Pz(u), Px(j))\big)
-\]
+$$
 
 The motivation is that the full CLIP space (D ≈ 512 or 768) contains many dimensions
 irrelevant to the visual reference game task. Projecting to d ≈ 10–50 dimensions isolates
@@ -254,12 +254,12 @@ CLIP listener model has poor held-out accuracy.
 
 The RSA pragmatic speaker selects utterances to maximize informativity minus cost:
 
-\[
+$$
 U(u; i, O, m_{g,i}) = \alpha \log L_0(i \mid u, O) - \lambda \cdot C(u) - \frac{1}{2\sigma^2}\|z(u) - m_{g,i}\|^2
-\]
-\[
+$$
+$$
 S_1(u \mid i, O, m_{g,i}) \propto \exp\big(\alpha_S \cdot U(u; i, O, m_{g,i})\big)
-\]
+$$
 
 The three terms are:
 - **Informativity**: log probability that the listener identifies target i (RSA term)
@@ -293,9 +293,9 @@ fitting.
 Older observations can be down-weighted in the posterior, on the grounds that earlier
 conventions may be less predictive of current behavior:
 
-\[
+$$
 p(m_{g,i} \mid D_{g,i}) \propto p(m_{g,i}) \cdot \prod_{\tau=0}^{T} \gamma^\tau \cdot p(\text{obs}_{T-\tau} \mid m_{g,i})
-\]
+$$
 
 where τ = 0 is the most recent trial and γ ∈ [0, 1] is the decay parameter. In CHAI,
 γ = 0.8.
@@ -312,12 +312,12 @@ with partner-switching where the convention resets.
 In games with rotating speakers/listeners, player identity may introduce systematic
 variation beyond the game-level convention. A player-specific deviation can be added:
 
-\[
+$$
 \delta_{p,i} \sim \mathcal{N}(0, \sigma^2_\text{player} \cdot I)
-\]
-\[
+$$
+$$
 m_{g,p,i} = \mu_i + \delta_{g,i} + \delta_{p,i}
-\]
+$$
 
 This separates:
 - δ_{g,i}: what this game's pair has converged on for image i
@@ -339,9 +339,9 @@ The core model treats failed utterances as *weak* evidence (wide σ²_t), but no
 *anti-evidence*. A stronger version actively pushes the posterior away from the failed
 utterance embedding:
 
-\[
+$$
 p(z(u_t) \mid m, y=0) \propto 1 - \exp\!\left(-\frac{\|z(u_t) - m\|^2}{2\rho^2}\right)
-\]
+$$
 
 implemented stably as a contrastive term in the log-likelihood. This makes "change
 direction after error" more forceful: the posterior is explicitly pushed away from the
