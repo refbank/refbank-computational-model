@@ -112,6 +112,13 @@ $$
   φ_k (partner-specific lexicon).
 - **σ_game** controls how much games typically diverge from the prototype.
 
+> **Note:** The current model uses a single σ_game shared across all images. A natural
+> extension is a per-image σ_{game,i}, which would allow the model to represent differences
+> in *nameability*: highly nameable images (with a dominant conventional label) would have
+> small σ_{game,i} because games converge to similar conventions, while ambiguous or
+> hard-to-name images would have large σ_{game,i}. This is deferred — fit the scalar
+> version first and check whether residual between-game variance is image-specific.
+
 With the 12 focal images reused across many games, μ_i is well-identified from data.
 The between-game divergence — a key phenomenon of interest — is directly quantifiable
 as the empirical variance of δ_{g,i} across games for each image.
@@ -153,7 +160,7 @@ The **accuracy-dependent variance** σ²_t is the mechanism by which communicati
 modulates the update:
 
 $$
-\sigma^2_t = \sigma^2_\text{min} + \frac{\sigma^2_\text{max} - \sigma^2_\text{min}}{\text{clip}(s_t, \varepsilon, 1)}
+\sigma^2_t = \sigma^2_\text{min} + \frac{\sigma^2_\text{max} - \sigma^2_\text{min}}{\max(\varepsilon,\, \min(s_t, 1))}
 $$
 
 where s_t = L_0(i_t | u_t, O_t, ℓ_t) is the model-implied probability that the listener
@@ -168,23 +175,49 @@ correctly identifies the target (computed from the fitted L_0).
 
 *Relationship to CHAI:* In CHAI, each observation tuple (o*, u', o') contributes
 asymmetrically to speaker and listener beliefs (speaker updates on L_0(o' | u'); listener
-updates on S_1(u | o*)). Here we simplify to a shared convention update. This asymmetry
-is noted as a discussion point below.
+updates on S_1(u | o*)). The model below maintains this asymmetry with separate
+speaker-side and listener-side posteriors (Section 5).
 
 ---
 
-### 5. Posterior Update (C2 analogue)
+### 5. Posterior Updates (C2 analogue)
 
-The full posterior over the convention for image i in game g is:
+Speaker and listener maintain separate beliefs about the convention, because they have
+access to different information on each trial.
+
+#### 5a. Speaker-side update
+
+The speaker produced u_t knowing the target i_t, then observed the listener's choice c_t.
+Their posterior over m_{g,i} is updated by the utterance embedding, with reliability
+modulated by the listener's success:
 
 $$
-p(m_{g,i} \mid D_{g,i}) \;\propto\; p(m_{g,i}) \cdot \prod_t p(c_t \mid u_t, O_t, \ell_t) \cdot p(z(u_t) \mid m_{g,i}, \sigma^2_t)
+p_S(m_{g,i} \mid D^S_{g,i}) \;\propto\; p(m_{g,i}) \cdot \prod_t p(z(u_t) \mid m_{g,i},\, \sigma^2_t)
 $$
 
-where D_{g,i} = {(u_t, c_t, O_t, ℓ_t)} is all observations for image i in game g.
+where $D^S_{g,i} = \{(u_t, c_t, O_t, \ell_t)\}$ and $\sigma^2_t$ is the accuracy-dependent
+variance from Section 4, computed from $s_t = L_0(i_t \mid u_t, O_t, \ell_t)$ — which the
+speaker can evaluate because they know the target $i_t$.
 
-This is not conjugate in closed form (because L_0 is a softmax that depends on m_{g,i}
-only through the accuracy-weighting of σ²_t). Inference options:
+#### 5b. Listener-side update
+
+The listener heard u_t, chose c_t, and received correctness feedback. Their posterior over
+m_{g,i} is updated by the utterance they heard, with reliability modulated by whether
+their choice was correct:
+
+$$
+p_L(m_{g,i} \mid D^L_{g,i}) \;\propto\; p(m_{g,i}) \cdot \prod_t p(z(u_t) \mid m_{g,i},\, \sigma^2_t)
+$$
+
+where $D^L_{g,i} = \{(u_t, c_t, O_t)\}$ and $\sigma^2_t$ is computed from $s_t^L =
+\mathbf{1}[c_t = i_t]$ (or a soft version) — the listener's own success signal, available
+after feedback.
+
+The two posteriors have the same emission structure but differ in how $s_t$ is computed:
+the speaker uses the model-implied $L_0$ score (they know the target), the listener uses
+their observed outcome (they know their choice was right or wrong).
+
+This is not conjugate in closed form. Inference options:
 
 - **Variational (SVI)**: fit q(m_{g,i}) = N(m̂, Σ̂) with an ELBO objective.
   Posterior covariance Σ̂ shrinks naturally as reliable evidence accumulates.
@@ -355,19 +388,10 @@ only if the soft version is insufficient.
 
 ### M6. Asymmetric Speaker / Listener Inference
 
-In CHAI, speaker and listener maintain *separate* beliefs about the partner's lexicon:
-
-- **Speaker infers** from the listener's choice c_t: P_S(φ | data) updated via L_0(c_t | u_t)
-- **Listener infers** from the speaker's utterance u_t: P_L(φ | data) updated via S_1(u_t | o*_t, φ)
-
-In the core model we simplify by maintaining a single shared convention m_{g,i} updated
-by both signals. This is appropriate when RefBank games have a fixed speaker role (one
-person describes, others choose), because the update is primarily from the speaker's
-perspective.
-
-**When to add:** Implement separate speaker/listener beliefs if the data contain many
-role-switching games, or if the symmetric version shows systematic residuals for the
-two roles.
+*This module has been promoted to the core model (Section 5).* Separate speaker-side
+and listener-side posteriors are now part of the base specification rather than an optional
+extension, because the two roles have structurally different information access and the
+asymmetry is necessary to correctly model convention updating.
 
 ---
 
@@ -389,11 +413,11 @@ partial-pooling predicts both (as in CHAI).
 
 ## Open Questions
 
-1. **Symmetric vs. asymmetric inference.** Should speaker and listener maintain separate
-   beliefs (as in CHAI), or update a shared game-level convention? The symmetric version
-   is simpler and may be sufficient for games with a fixed speaker role; the asymmetric
-   version is more faithful to CHAI but requires the full S_1 speaker model to compute
-   listener inference, which is expensive.
+1. **How to combine speaker and listener posteriors.** The model now maintains separate
+   $p_S(m_{g,i})$ and $p_L(m_{g,i})$ (Section 5). It is not yet specified how these
+   are combined — whether predictions at round $t$ use one or the other (depending on
+   role), or a mixture, or whether they are kept fully separate throughout. This requires
+   a decision before implementation.
 
 2. **Initializing μ_i.** Should the global prototype for image i be initialized at the
    CLIP image embedding (perceptually anchored) or estimated freely from utterance data?
@@ -401,7 +425,7 @@ partial-pooling predicts both (as in CHAI).
    assumptions; free estimation is more flexible but requires more data.
 
 3. **σ²_t as a function of s_t.** The choice of functional form (the current formula
-   with clip(s_t, ε, 1) in the denominator) is one of several possibilities. Alternative:
+   with max(ε, min(s_t, 1)) in the denominator) is one of several possibilities. Alternative:
    a linear interpolation σ²_t = (1 - s_t) · σ²_max + s_t · σ²_min. The functional form
    affects how sharply the model distinguishes near-misses from clear successes.
 
@@ -431,3 +455,46 @@ partial-pooling predicts both (as in CHAI).
    a learned projection P is necessary is an empirical question to be answered in Stage 1.
    The optimal d (if projection is added) should be chosen by cross-validated predictive
    likelihood, not by prior assumption.
+
+9. **Shared semantic space and posterior update (under investigation).** The assumption
+   that speakers and listeners operate in the same CLIP semantic space may not hold in
+   practice. Additionally, the likelihood term in Section 5 (C2 posterior update) may
+   have a bug — the interaction between the listener-choice signal and the emission model
+   is under review.
+
+10. **Absence of L2 (pragmatic listener).** The model uses only L_0 — a literal listener
+   that responds to raw CLIP similarity. A full RSA stack would include an L_2 that
+   renormalizes over the speaker's distribution (providing contrastive/pragmatic inference).
+   The current model has no mechanism for contrast or renormalization on the listener side.
+   Whether this omission matters empirically — and whether adding L_2 is tractable given
+   that S_1 requires summing over free-text utterances — is an open question.
+
+11. **Per-image convention spread.** σ_game is currently a scalar shared across all images.
+   Replacing it with a per-image σ_{game,i} would capture nameability: low σ_{game,i}
+   for images with dominant conventional labels, high σ_{game,i} for ambiguous images.
+   Deferred until after the scalar version is fitted and residuals examined.
+
+12. **Where convention reshapes behavior: pull term vs. space transformation.**
+   The M2 speaker utility includes a convention pull term $-\frac{1}{2\sigma^2}\|z(u) - m_{g,i}\|^2$
+   that steers utterance selection toward the game convention. This may be the wrong place
+   for it: rather than pulling the speaker toward m_{g,i}, the convention should reshape
+   how utterance-image similarity is computed — changing what utterances *mean* for a
+   given game pair, so the effect propagates through both speaker and listener naturally.
+   Two candidate approaches:
+
+   - **Shifted speaker prior (cognitive accessibility).** Treat m_{g,i} as shifting the
+     prior over what utterances come to mind: the speaker samples more densely around
+     recently used semantic regions because those descriptions are more cognitively
+     accessible. Convention reuse emerges from memory/fluency rather than from an
+     explicit utility pull. Requires the speaker model to be generative (proposal + rerank).
+   - **Speaker's updated model of listener semantics.** The speaker maintains a model of
+     how the listener interprets utterances, and updates it based on communicative outcomes.
+     Successful trials shift the speaker's L_0 estimate for this game pair — effectively
+     warping the semantic space through which the speaker reasons about listener behavior.
+     Convention then enters through the speaker's inferred listener model rather than
+     through a direct pull toward m_{g,i}.
+
+13. **Other social goals.** Speakers may pursue goals beyond successful reference —
+   e.g., politeness, brevity norms, rapport, or avoiding face-threatening descriptions.
+   Modeling these would require extending the speaker utility function beyond informativity
+   and convention pull. Probably beyond scope.
