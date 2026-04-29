@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# JAX XLA compilation cache
+.xla_cache/
+.model_cache/

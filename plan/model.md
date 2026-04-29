@@ -160,15 +160,15 @@ The **accuracy-dependent variance** σ²_t is the mechanism by which communicati
 modulates the update:
 
 $$
-\sigma^2_t = \sigma^2_\text{min} + \frac{\sigma^2_\text{max} - \sigma^2_\text{min}}{\max(\varepsilon,\, \min(s_t, 1))}
+\sigma^2_t = \sigma^2_\text{min} + (\sigma^2_\text{max} - \sigma^2_\text{min}) \cdot \frac{1 - \max(\varepsilon,\, \min(s_t, 1))}{\max(\varepsilon,\, \min(s_t, 1))}
 $$
 
 where s_t = L_0(i_t | u_t, O_t, ℓ_t) is the model-implied probability that the listener
 correctly identifies the target (computed from the fitted L_0).
 
-- When s_t ≈ 1 (high success): σ²_t ≈ σ²_min — the emission is tight, and the observed
+- When s_t = 1 (perfect success): σ²_t = σ²_min — the emission is tight, and the observed
   utterance strongly informs the convention. The posterior over m_{g,i} tightens.
-- When s_t ≈ 0 (failure): σ²_t → σ²_max — the emission is wide, meaning the failed
+- When s_t ≈ 0 (failure): σ²_t grows large — the emission is wide, meaning the failed
   utterance is treated as unreliable evidence. The posterior barely moves toward the
   failed embedding, and combined with the listener-choice signal that penalizes the current
   utterance direction, future utterances will tend to move elsewhere.
@@ -233,7 +233,37 @@ This is not conjugate in closed form. Inference options:
 
 ---
 
-### 6. Emergent Predictions
+### 6. Speaker Model (S_1)
+
+The RSA pragmatic speaker selects utterances to maximize informativity minus cost:
+
+$$
+U(u; i, O) = \alpha_S \log L_0(i \mid u, O) - \lambda \cdot C(u)
+$$
+$$
+S_1(u \mid i, O) \propto \exp\big(\alpha_S \cdot U(u; i, O)\big)
+$$
+
+The two terms are:
+- **Informativity**: log probability that the listener identifies target i (RSA term)
+- **Cost**: C(u) = word count, character count, or similar surface measure
+
+Convention does not enter as an explicit pull term here; how game-specific conventions
+reshape utterance behavior is an open question (see Open Question 12).
+
+Because the utterance space is open (free text), S_1 cannot be used as a proper generative
+distribution — the normalizing constant sums over all possible strings. Two uses:
+
+1. **As a scoring function** (tractable): given observed u_t, evaluate U(u_t) without
+   normalizing. Useful for quantifying how speaker-optimal observed utterances are.
+2. **As a generative model via proposal + rerank**:
+   - Propose K candidates from an LLM conditioned on the target image
+   - Score each with U(u_k)
+   - Select via softmax over scores
+
+---
+
+### 7. Emergent Predictions
 
 The following phenomena are *not* imposed — they should emerge from the model structure
 and be checked post-fitting on held-out games:
@@ -248,7 +278,7 @@ and be checked post-fitting on held-out games:
 
 ---
 
-### 7. Core Free Parameters
+### 8. Core Free Parameters
 
 | Parameter | Role | How estimated |
 |---|---|---|
@@ -258,6 +288,8 @@ and be checked post-fitting on held-out games:
 | σ_min | Emission variance for highly successful trials | Fitted in Stage 2 |
 | σ_max | Emission variance for failed trials | Fitted in Stage 2 |
 | ε | Clipping floor on s_t (numerical stability) | Fixed small constant (e.g. 0.01) |
+| α_S | Speaker rationality | Fitted in Stage 2 |
+| λ | Cost weight | Fitted in Stage 2 |
 
 ---
 
@@ -283,45 +315,7 @@ CLIP listener model has poor held-out accuracy.
 
 ---
 
-### M2. Speaker Model (S_1)
-
-The RSA pragmatic speaker selects utterances to maximize informativity minus cost:
-
-$$
-U(u; i, O, m_{g,i}) = \alpha \log L_0(i \mid u, O) - \lambda \cdot C(u) - \frac{1}{2\sigma^2}\|z(u) - m_{g,i}\|^2
-$$
-$$
-S_1(u \mid i, O, m_{g,i}) \propto \exp\big(\alpha_S \cdot U(u; i, O, m_{g,i})\big)
-$$
-
-The three terms are:
-- **Informativity**: log probability that the listener identifies target i (RSA term)
-- **Cost**: C(u) = word count, character count, or similar surface measure
-- **Convention pull**: Euclidean distance from the current convention point m_{g,i};
-  this creates a drive to reuse established semantic regions (coordination pressure)
-
-Because the utterance space is open (free text), S_1 cannot be used directly as a proper
-generative distribution — the normalizing constant sums over all possible strings. Two uses:
-
-1. **As a scoring function** (tractable): given observed u_t, evaluate U(u_t) without
-   normalizing. Useful for quantifying how speaker-optimal observed utterances are.
-2. **As a generative model via proposal + rerank** (deferred):
-   - Propose K candidates from an LLM conditioned on the target image
-   - Score each with U(u_k)
-   - Select via softmax over scores
-   This allows the model to predict/generate utterances but requires an LLM call per trial.
-
-**When to add:** Phase 1 defers the speaker model. Add scoring (use 1) once the convention
-model is fitted, to check whether observed utterances are consistent with RSA optimality.
-Add proposal + rerank (use 2) only if utterance generation is a target.
-
-Additional parameters: α_S (speaker rationality), λ (cost weight), σ (convention pull
-strength). These can also be estimated from data but are not needed for listener-choice
-fitting.
-
----
-
-### M3. Memory / Recency Discounting
+### M2. Memory / Recency Discounting
 
 Older observations can be down-weighted in the posterior, on the grounds that earlier
 conventions may be less predictive of current behavior:
@@ -411,6 +405,32 @@ partial-pooling predicts both (as in CHAI).
 
 ---
 
+## Evaluation
+
+Games are split 80/20 into train and test sets. All model fitting (convention posteriors,
+listener sharpness parameters, speaker parameters) is done on training games only. Evaluation
+is on held-out test games, which the model has never seen.
+
+The primary evaluation metric is **held-out listener choice log-likelihood**: for each
+trial, $\log p(c_t \mid u_t, O_t, \ell_t)$ — the probability the model assigns to the
+image the listener actually chose, given the utterance, option set, and listener identity.
+This is computable for any game without access to ground-truth convention labels.
+
+Model variants (complete-pooling, no-pooling, partial-pooling) are compared on this metric.
+
+The **speaker model** is evaluated by ranking: because $S_1$'s normalizing constant is
+intractable over free text, we evaluate the utility $U(u; i, O)$ of the speaker's actual
+utterance relative to a set of sampled alternative utterances for the same target. A
+well-fitted speaker model should assign higher utility to the observed utterance than to
+alternatives — this can be summarized as rank or top-$k$ accuracy across trials.
+
+> **TODO:** Work out how to assess whether the model captures the phenomena of interest
+> (step-size decrease, direction change after error, within-game convergence, between-game
+> divergence, within-game differentiation). These are listed as emergent predictions in
+> Section 7 but the evaluation procedure for checking them against data is not yet specified.
+
+---
+
 ## Open Questions
 
 1. **How to combine speaker and listener posteriors.** The model now maintains separate
@@ -419,82 +439,137 @@ partial-pooling predicts both (as in CHAI).
    role), or a mixture, or whether they are kept fully separate throughout. This requires
    a decision before implementation.
 
+   > **Answer:** The two posteriors are kept fully separate and parallel throughout — no
+   > combination. At prediction time, the speaker role uses $p_S$ and the listener role
+   > uses $p_L$. This separation is also analytically useful: tracking the distance between
+   > $p_S(m_{g,i})$ and $p_L(m_{g,i})$ over rounds lets us measure whether the pair's
+   > meaning representations converge during a game.
+
 2. **Initializing μ_i.** Should the global prototype for image i be initialized at the
    CLIP image embedding (perceptually anchored) or estimated freely from utterance data?
    The CLIP initialization provides a principled starting point but introduces cross-modal
    assumptions; free estimation is more flexible but requires more data.
+
+   > **Answer:** Three options, each modularized so they can be swapped:
+   > 1. **CLIP image embedding** — x(i) projected to text space. May require a learned
+   >    linear projector to bridge the modality gap.
+   > 2. **R1 average** — mean of utterance embeddings z(u) from round 1 across all games
+   >    for image i. Purely data-driven; no cross-modal assumption.
+   > 3. **Kilogram name embeddings** — text embeddings of the canonical names for each
+   >    image from the Kilogram dataset. Provides a linguistically grounded prior.
 
 3. **σ²_t as a function of s_t.** The choice of functional form (the current formula
    with max(ε, min(s_t, 1)) in the denominator) is one of several possibilities. Alternative:
    a linear interpolation σ²_t = (1 - s_t) · σ²_max + s_t · σ²_min. The functional form
    affects how sharply the model distinguishes near-misses from clear successes.
 
+   > **Answer:** Current formulation is fine.
+
 4. **Inference method.** SVI (variational Gaussians) is the current plan. A particle
    filter is more faithful to online per-round Bayesian updating but more complex. Laplace
    is lighter but loses uncertainty in posterior covariance. The choice matters for how
    cleanly "step size decrease" emerges.
 
-5. **Role of the listener choice in convention updating.** The core model has two signals:
-   the listener choice c_t (via L_0 likelihood) and the utterance embedding z(u_t) (via
-   emission model). It's not obvious how to weight these. The listener choice is clean and
-   direct but does not directly constrain m_{g,i} (only indirectly through s_t). Does the
-   listener-choice term need to enter the m_{g,i} posterior directly, or is accuracy-weighting
-   of the emission sufficient?
+   > **Answer:** SVI is okay.
 
-6. **Whether failures are weak evidence or anti-evidence.** The choice between M5 (repulsive
+5. **Role of the listener choice in the speaker-side posterior update.** With asymmetric
+   updating, the listener's choice c_t enters the speaker-side update (5a) only through
+   σ²_t (via s_t = L_0(i_t | u_t, O_t, ℓ_t)). The question is whether this
+   accuracy-weighting of the emission is sufficient to constrain $p_S(m_{g,i})$, or
+   whether the listener's multinomial choice also needs to enter the speaker posterior
+   directly as a likelihood term.
+
+   > **Answer:** Use binary correct/incorrect ($s_t = \mathbf{1}[c_t = i_t]$) for now;
+   > adding the direct multinomial likelihood term is deferred. Note: the right treatment
+   > here also depends on the feedback structure (what correctness information is actually
+   > given to players) and on polyadic games (multiple simultaneous listeners), so revisit
+   > alongside those features.
+
+6. **Whether failures are weak evidence or anti-evidence.** The choice between M2 (repulsive
    likelihood) and the core accuracy-weighted emission determines whether errors produce
    gentle drift or active repulsion. This is an empirical question: check whether the
-   direction-change effect emerges clearly from the core model before adding M5.
+   direction-change effect emerges clearly from the core model before adding M2.
+
+   > **Answer:** Keep M2 as optional for now; try it once the core model is fitted.
 
 7. **Multi-listener trials.** In trials with multiple simultaneous listeners, each listener
    provides an independent choice c_t^ℓ. Currently treated as independent data points.
    A jointly modeled version would acknowledge that listener choices on the same trial are
    not i.i.d. (they receive the same utterance). This is likely a minor correction.
 
-8. **Low-rank projection and dimensionality.** Whether the raw CLIP space is adequate or
-   a learned projection P is necessary is an empirical question to be answered in Stage 1.
-   The optimal d (if projection is added) should be chosen by cross-validated predictive
-   likelihood, not by prior assumption.
+   > **Answer:** Treat as i.i.d. for now.
 
-9. **Shared semantic space and posterior update (under investigation).** The assumption
+8. **Whether a learned projection is needed.** The raw CLIP image and text embeddings live
+   in the same nominal space but may not be well-aligned for the reference game task —
+   a learned projector head is probably necessary (see the note on CLIP initialization in
+   OQ2). Whether this projection is learned per modality, shared, or applied only to one
+   side is an open implementation question.
+
+9. **Whether the task-relevant subspace is low-rank.** Separately from the projection
+   question, the full CLIP space (D ≈ 512 or 768) may contain many dimensions irrelevant
+   to this task. Projecting to a lower-dimensional subspace (d ≈ 10–50) could isolate
+   discriminative directions and improve fit. The optimal d should be chosen by
+   cross-validated predictive likelihood, not by prior assumption.
+
+10. **Shared semantic space and posterior update (under investigation).** The assumption
    that speakers and listeners operate in the same CLIP semantic space may not hold in
    practice. Additionally, the likelihood term in Section 5 (C2 posterior update) may
    have a bug — the interaction between the listener-choice signal and the emission model
    is under review.
 
-10. **Absence of L2 (pragmatic listener).** The model uses only L_0 — a literal listener
-   that responds to raw CLIP similarity. A full RSA stack would include an L_2 that
-   renormalizes over the speaker's distribution (providing contrastive/pragmatic inference).
-   The current model has no mechanism for contrast or renormalization on the listener side.
-   Whether this omission matters empirically — and whether adding L_2 is tractable given
-   that S_1 requires summing over free-text utterances — is an open question.
+   > **Answer:** Addressed by having non-shared spaces for speaker and listener (separate
+   > posteriors per role). The likelihood bug remains under investigation.
 
-11. **Per-image convention spread.** σ_game is currently a scalar shared across all images.
+11. **Absence of pragmatic listener (L1).** The model uses only L_0 — a literal listener
+   that responds to raw CLIP similarity. A pragmatic L_1 would reason about what else the
+   speaker could have said for each image option: $L_1(i \mid u) \propto S_1(u \mid i) \cdot P(i)$,
+   giving contrastive inference without needing a full L_2 stack. The current model has no
+   such contrastive mechanism.
+
+   > **Answer:** We should include a pragmatic L_1 listener that considers what else the
+   > speaker could have said for each option. L_1 should be implemented via sampling:
+   > for each image $j \in O$, draw candidate utterance embeddings from the space around
+   > $p_L(m_{g,j})$ (the listener's current convention posterior for image $j$), score
+   > them under $L_0$, and use those samples to approximate $S_1(u \mid j)$. This makes
+   > the pragmatic inference tractable without enumerating all possible strings.
+
+12. **Per-image convention spread.** σ_game is currently a scalar shared across all images.
    Replacing it with a per-image σ_{game,i} would capture nameability: low σ_{game,i}
    for images with dominant conventional labels, high σ_{game,i} for ambiguous images.
    Deferred until after the scalar version is fitted and residuals examined.
 
-12. **Where convention reshapes behavior: pull term vs. space transformation.**
+   > **Answer:** Skip for now.
+
+13. **Where convention reshapes behavior: pull term vs. space transformation.**
    The M2 speaker utility includes a convention pull term $-\frac{1}{2\sigma^2}\|z(u) - m_{g,i}\|^2$
    that steers utterance selection toward the game convention. This may be the wrong place
    for it: rather than pulling the speaker toward m_{g,i}, the convention should reshape
    how utterance-image similarity is computed — changing what utterances *mean* for a
    given game pair, so the effect propagates through both speaker and listener naturally.
-   Two candidate approaches:
+   Possible options:
 
-   - **Shifted speaker prior (cognitive accessibility).** Treat m_{g,i} as shifting the
-     prior over what utterances come to mind: the speaker samples more densely around
-     recently used semantic regions because those descriptions are more cognitively
-     accessible. Convention reuse emerges from memory/fluency rather than from an
-     explicit utility pull. Requires the speaker model to be generative (proposal + rerank).
-   - **Speaker's updated model of listener semantics.** The speaker maintains a model of
-     how the listener interprets utterances, and updates it based on communicative outcomes.
-     Successful trials shift the speaker's L_0 estimate for this game pair — effectively
-     warping the semantic space through which the speaker reasons about listener behavior.
-     Convention then enters through the speaker's inferred listener model rather than
-     through a direct pull toward m_{g,i}.
+   Two options to pursue:
 
-13. **Other social goals.** Speakers may pursue goals beyond successful reference —
+   - **(a) Shifted speaker prior.** Treat m_{g,i} as shifting the distribution from which
+     the speaker samples utterances — recent conventions are more accessible in memory, so
+     the speaker generates more readily from regions of semantic space near the established
+     convention. Convention pull emerges from the generative prior rather than from an
+     explicit utility term.
+   - **(b) Updated semantics in the speaker's listener model.** The speaker maintains an
+     internal model of how the listener interprets utterances, and updates that model's
+     semantics based on in-game experience. Concretely: the speaker's L_0 uses
+     game-specific representations (e.g., $m_{g,i}$ in place of $x(i)$) rather than raw
+     CLIP, so the speaker reasons about what will work *for this listener* given what has
+     been established. Convention enters through the speaker's belief about listener
+     semantics, not through a pull term in utility.
+
+   > **Answer:** Plan to implement both (a) and (b).
+
+14. **Other social goals.** Speakers may pursue goals beyond successful reference —
    e.g., politeness, brevity norms, rapport, or avoiding face-threatening descriptions.
    Modeling these would require extending the speaker utility function beyond informativity
    and convention pull. Probably beyond scope.
+
+   > **Answer:** Skip for now.
+   
+15. ** other things we're skippinng for now ** May want to consider a) a comparison/switch to RD-RSA and b) the use of criticAL style model critique loops. 

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -e
+trap 'rc=$?; command -v prove_it >/dev/null 2>&1 && prove_it record --name full-tests --result $rc' EXIT
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+.venv/bin/pytest "$@"
