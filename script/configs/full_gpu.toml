@@ -1,0 +1,7 @@
+# Full inference run — use all games, full step counts.
+# Requires a GPU; see plan/compute_plan.md for cluster setup.
+description = "Full GPU inference"
+
+n_games = 0           # 0 = use all games in the dataset
+listener_steps = 5000
+convention_steps = 8000

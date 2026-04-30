@@ -16,7 +16,8 @@ data = [
     "transformers>=5.0",
     "torch",
     "Pillow",
-    "httpx[socks]",   # needed when a SOCKS proxy is configured
+    "cairosvg",        # rasterizes SVG stimuli for CLIP encoding
+    "httpx[socks]",    # needed when a SOCKS proxy is configured
 ]
 
 [tool.pytest.ini_options]

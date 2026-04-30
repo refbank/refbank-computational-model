@@ -38,7 +38,7 @@ def listener_convention_model(
     m_gi = mu_i[None, :, :] + delta_gi_t
 
     m_per_trial = m_gi[batch.game_ids, batch.image_ids]  # (N, D)
-    sigma2_t = compute_sigma2_t(s_t_binary, sigma_min, sigma_max)
+    sigma2_t = jnp.maximum(compute_sigma2_t(s_t_binary, sigma_min, sigma_max), 1e-6)
     sigma_t = jnp.sqrt(sigma2_t)
 
     with numpyro.plate("trials", batch.utterance_emb.shape[0]):

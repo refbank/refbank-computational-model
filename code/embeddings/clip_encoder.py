@@ -1,5 +1,7 @@
+import io
 import os
 
+import cairosvg
 import numpy as np
 import torch
 from PIL import Image
@@ -11,6 +13,14 @@ _DEFAULT_CACHE = os.path.join(
     os.path.dirname(__file__), "..", "..", ".model_cache"
 )
 os.environ.setdefault("HF_HOME", os.path.abspath(_DEFAULT_CACHE))
+
+
+def _open_image(path: str) -> Image.Image:
+    """Open an image file as a PIL RGB image, rasterizing SVGs via cairosvg."""
+    if path.lower().endswith(".svg"):
+        png_bytes = cairosvg.svg2png(url=path)
+        return Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    return Image.open(path).convert("RGB")
 
 
 class CLIPEncoder:
@@ -28,7 +38,7 @@ class CLIPEncoder:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Image not found: {path}")
 
-        images = [Image.open(p).convert("RGB") for p in image_paths]
+        images = [_open_image(p) for p in image_paths]
         inputs = self._processor(images=images, return_tensors="pt")
         with torch.no_grad():
             vision_out = self._model.vision_model(pixel_values=inputs["pixel_values"])

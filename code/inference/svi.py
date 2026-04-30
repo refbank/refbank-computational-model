@@ -20,14 +20,20 @@ def run_svi(
     n_steps: int,
     lr: float = 0.01,
     seed: int = 0,
+    clip_norm: float | None = None,
     _inject_nan_at_step: int | None = None,
 ) -> SVIResult:
     """
     Adam + ELBO SVI via NumPyro.
+    clip_norm: if set, uses ClippedAdam to bound gradient norms (helps with
+      high-dimensional models where raw gradients can overflow).
     Raises RuntimeError("NaN loss at step {i}") if loss is NaN after step 100.
     _inject_nan_at_step: test-only hook to inject NaN at a specific step.
     """
-    optimizer = numpyro.optim.Adam(step_size=lr)
+    if clip_norm is not None:
+        optimizer = numpyro.optim.ClippedAdam(step_size=lr, clip_norm=clip_norm)
+    else:
+        optimizer = numpyro.optim.Adam(step_size=lr)
     svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
     rng_key = jax.random.PRNGKey(seed)
     state = svi.init(rng_key, *model_args)

@@ -178,6 +178,7 @@ def fit_convention(
     n_steps: int = 8000,
     lr: float = 0.01,
     seed: int = 0,
+    clip_norm: float | None = 10.0,
 ) -> ConventionFit:
     """
     Fits speaker_convention_model and listener_convention_model independently.
@@ -203,6 +204,7 @@ def fit_convention(
         n_steps=n_steps,
         lr=lr,
         seed=seed,
+        clip_norm=clip_norm,
     )
 
     listener_result = run_svi(
@@ -212,6 +214,7 @@ def fit_convention(
         n_steps=n_steps,
         lr=lr,
         seed=seed + 1,
+        clip_norm=clip_norm,
     )
 
     sp = speaker_result.params

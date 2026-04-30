@@ -1,0 +1,7 @@
+# Quick sanity check — runs in a few minutes on a laptop CPU.
+# Confirms the pipeline runs end-to-end. Posteriors are meaningless at this scale.
+description = "Quick CPU sanity check"
+
+n_games = 5           # number of games to use (0 = all games)
+listener_steps = 20
+convention_steps = 20

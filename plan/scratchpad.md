@@ -1,38 +1,58 @@
 # Scratchpad
 
-## Current position: all steps complete
+## Current position: pipeline runs end-to-end; ready for cluster
 
-Steps 1–22 complete. redivis_client.py and clip_encoder.py implemented.
+All 44 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
+analysis) runs on real Redivis data via `script/run_pipeline.py`.
 
-## Remaining work
+## How to run the pipeline
 
-- [ ] Write run script in `script/run` wiring: fetch_tables → join_tables → filter_images → embeddings → build_trial_batch → fit_listener → fit_convention → analysis
-  - Blocked on: knowing where RefBank images are stored locally (needed for CLIPEncoder.encode_images file paths)
-- [ ] Confirm: does the images table in Redivis have download URLs, or are images stored elsewhere?
+```bash
+# Sanity check on laptop (20 SVI steps — confirms pipeline works, posteriors meaningless)
+.venv/bin/python script/run_pipeline.py --config quick_cpu
+
+# GPU smoke test (500 steps, 5 games — confirms GPU env works, loss should decrease)
+.venv/bin/python script/run_pipeline.py --config gpu_test
+
+# Full inference (5000/8000 steps, all games — requires GPU; see plan/compute_plan.md)
+.venv/bin/python script/run_pipeline.py --config full_gpu
+```
+
+Config files are in `script/configs/*.toml`. Custom configs can be passed as a path.
+
+## Open questions / next steps
+
+- [ ] Implement `jax.lax.scan` in `run_svi` to replace the Python for-loop.
+  This is the key change needed before running full fits efficiently on GPU.
+  (Python loop: ~30–60 min on laptop for full step counts; `lax.scan` + GPU: ~2–4 min)
+- [ ] Run full pipeline on cluster GPU and check that loss converges and analysis
+  outputs make sense (step sizes decrease, displacement larger after failure).
+- [ ] Confirm: full `hawkins2020_characterizing_cued` dataset size (n_games, n_images,
+  n_trials) — needed to estimate GPU RAM and time precisely.
+- [ ] Should `fit_convention` save intermediate checkpoints in case a cluster job is killed?
 
 ## Completed
 - [x] Steps 1–16 — all unit tests pass (cache, convention_model, loader, pipeline, svi)
-- [x] Step 17–18 — `predictions.py` with `sequential_kalman_means`, `step_sizes_over_reps`,
+- [x] Steps 17–18 — `predictions.py` with `sequential_kalman_means`, `step_sizes_over_reps`,
   `semantic_displacement_after_error`; `tests/unit/test_predictions.py` all 5 pass
-- [x] Step 20 — `semantic_displacement_after_error` included above
-- [x] Step 21 — `filter_images` threshold mode already implemented in loader.py
+- [x] Steps 20–21 — `semantic_displacement_after_error`, `filter_images` threshold mode
+- [x] `redivis_client.py` and `clip_encoder.py` implemented (SVG rasterization supported)
+- [x] `script/run_pipeline.py` — end-to-end pipeline script with `--config` argument
+- [x] `script/configs/` — three config files: `quick_cpu`, `gpu_test`, `full_gpu`
+- [x] `tests/integration/test_int_real_data.py` — regression tests on real data fixtures
+  (200-step fits; skipped when fixtures absent)
+- [x] `plan/compute_plan.md` — computational footprint analysis and cluster setup notes
 
-## Notes / decisions made
+## Known issues / decisions
+
 - `sequential_kalman_means` uses binary correctness (selected_idx == target_idx) for s_t
   in both speaker and listener roles. Schema said speaker should use `compute_success_probs`
-  (L_0 score), but that requires ListenerFit which isn't in ConventionFit. Binary
+  (L_0 score), but that requires `ListenerFit` which isn't in `ConventionFit`. Binary
   correctness is a reasonable proxy and keeps the function self-contained.
   Revisit if this causes INT-2 to fail.
 - `semantic_displacement_after_error` takes a `fit` param for API consistency but doesn't
   use it (displacement is data-level; prev_success is binary from batch).
-
-## JAX initialization slowness (to investigate)
-The unit test suite takes ~9 minutes to run because JAX initializes on first import
-(XLA compilation, device setup). Possible mitigations to investigate:
-- `JAX_PLATFORMS=cpu` env var — forces CPU, may skip GPU probe delays
-- `pytest-xdist` parallel workers — each worker pays init cost once
-- Fixture scoping — share JAX-heavy objects across tests with `scope="session"`
-- Whether the slow step is actually NumPyro SVI (5000 steps) vs JAX init
-  (the `test_fit_convention_output_shapes` test does 200 SVI steps — that test alone
-  may account for most of the time)
-Action: run `pytest --durations=10` on the unit suite to identify the slow tests.
+- The Python for-loop in `run_svi` is slow at D=512 scale. This caused the laptop to hang
+  at 1000 convention steps. `lax.scan` is the fix — see plan/compute_plan.md.
+- Fixture saving in `run_pipeline.py` only triggers when `n_games == 5` (the default for
+  quick_cpu and gpu_test). Full-data runs don't overwrite the 5-game fixtures.

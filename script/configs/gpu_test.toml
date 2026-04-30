@@ -1,0 +1,7 @@
+# GPU smoke test — enough steps to see the loss decreasing, still a small data slice.
+# Run on a GPU node to confirm the environment works before a full fit.
+description = "GPU smoke test"
+
+n_games = 5           # number of games to use (0 = all games)
+listener_steps = 500
+convention_steps = 500
