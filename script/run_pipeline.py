@@ -11,11 +11,15 @@ Run from the project root:
 Config files live in script/configs/. See plan/compute_plan.md for cluster setup.
 Redivis will open a browser auth window on first use.
 Images and embeddings are cached in data/ so subsequent runs are faster.
+
+If --output-dir is given, saves listener_fit.npz, convention_fit.npz,
+step_sizes.csv, and displacement.csv there for offline analysis.
 """
 import argparse
 import logging
 import os
 import sys
+import time
 import tomllib
 
 import numpy as np
@@ -34,8 +38,17 @@ from code.prep_data.loader import join_tables
 from code.prep_data.pipeline import build_trial_batch_from_df
 from code.embeddings.clip_encoder import CLIPEncoder
 from code.embeddings.cache import EmbeddingCache, embeddings_for_ids
-from code.models.literal_listener import fit_listener
-from code.models.conventional_speaker import compute_r1_average, fit_convention
+from code.models.literal_listener import (
+    fit_listener,
+    save_listener_fit,
+    load_listener_fit,
+)
+from code.models.conventional_speaker import (
+    compute_r1_average,
+    fit_convention,
+    save_convention_fit,
+    load_convention_fit,
+)
 from code.analysis.predictions import step_sizes_over_reps, semantic_displacement_after_error
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -61,12 +74,24 @@ def load_config(name_or_path: str) -> dict:
         return tomllib.load(f)
 
 
+def _elapsed(t0: float) -> str:
+    secs = time.time() - t0
+    if secs < 60:
+        return f"{secs:.1f}s"
+    return f"{secs / 60:.1f}min"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RefBank model pipeline")
     parser.add_argument(
         "--config",
         default="quick_cpu",
         help="Config name (looks in script/configs/) or path to a .toml file",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to save fits and analysis CSVs (created if absent)",
     )
     args = parser.parse_args()
 
@@ -77,6 +102,11 @@ def main() -> None:
     listener_steps = cfg["listener_steps"]
     convention_steps = cfg["convention_steps"]
 
+    output_dir = args.output_dir
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        log.info("Results will be saved to %s/", output_dir)
+
     os.makedirs(CACHE_DIR, exist_ok=True)
 
     # --- auth ---
@@ -84,11 +114,12 @@ def main() -> None:
     redivis.authenticate()
 
     # --- fetch tabular data ---
+    t0 = time.time()
     log.info("Fetching tables for %s...", STUDY_ID)
     trials_df, messages_df, choices_df = fetch_tables(STUDY_ID)
     log.info(
-        "Fetched: %d trials  %d messages  %d choices",
-        len(trials_df), len(messages_df), len(choices_df),
+        "Fetched: %d trials  %d messages  %d choices  (%s)",
+        len(trials_df), len(messages_df), len(choices_df), _elapsed(t0),
     )
     log.info("trials columns:  %s", list(trials_df.columns))
     log.info("messages columns: %s", list(messages_df.columns))
@@ -125,6 +156,7 @@ def main() -> None:
         paths = [image_paths[img_id] for img_id in ids]
         return encoder.encode_images(paths)
 
+    t0 = time.time()
     log.info("Encoding %d distinct images...", len(all_image_ids))
     image_embs = embeddings_for_ids(all_image_ids, img_cache, image_encoder_fn)
 
@@ -132,6 +164,7 @@ def main() -> None:
     utterances = df["utterance"].unique().tolist()
     log.info("Encoding %d distinct utterances...", len(utterances))
     text_embs = embeddings_for_ids(utterances, text_cache, encoder.encode_texts)
+    log.info("Embeddings ready (%s)", _elapsed(t0))
 
     # --- build batch ---
     log.info("Building TrialBatch...")
@@ -154,24 +187,34 @@ def main() -> None:
         log.info("Fixtures saved to %s/", FIXTURES_DIR)
 
     # --- Stage 1: literal listener ---
+    t0 = time.time()
     log.info("Fitting literal listener (%d SVI steps)...", listener_steps)
     listener_fit = fit_listener(batch, n_steps=listener_steps)
     log.info(
-        "mu_beta=%.3f  sigma_beta=%.3f",
-        listener_fit.mu_beta, listener_fit.sigma_beta,
+        "Listener fit done (%s) — mu_beta=%.3f  sigma_beta=%.3f",
+        _elapsed(t0), listener_fit.mu_beta, listener_fit.sigma_beta,
     )
     log.info("Per-listener log-beta (posterior means): %s", listener_fit.beta_loc.round(3))
+
+    if output_dir is not None:
+        save_listener_fit(listener_fit, os.path.join(output_dir, "listener_fit.npz"))
+        log.info("Saved listener_fit.npz")
 
     # --- Stage 2: convention model ---
     log.info("Computing R1 averages for mu_i init...")
     mu_i_init = compute_r1_average(batch)
 
+    t0 = time.time()
     log.info("Fitting convention model (%d SVI steps)...", convention_steps)
     convention_fit = fit_convention(batch, listener_fit, mu_i_init, n_steps=convention_steps)
     log.info(
-        "sigma_game=%.4f  sigma_min=%.4f  sigma_max=%.4f",
-        convention_fit.sigma_game, convention_fit.sigma_min, convention_fit.sigma_max,
+        "Convention fit done (%s) — sigma_game=%.4f  sigma_min=%.4f  sigma_max=%.4f",
+        _elapsed(t0), convention_fit.sigma_game, convention_fit.sigma_min, convention_fit.sigma_max,
     )
+
+    if output_dir is not None:
+        save_convention_fit(convention_fit, os.path.join(output_dir, "convention_fit.npz"))
+        log.info("Saved convention_fit.npz")
 
     # --- analysis ---
     log.info("Computing step sizes over reps (speaker role)...")
@@ -195,6 +238,11 @@ def main() -> None:
     print(f"Mean displacement after success:  {after_success:.4f}")
     if not disp_df[~disp_df["prev_success"]].empty and not disp_df[disp_df["prev_success"]].empty:
         print(f"Larger after failure (expected):  {after_failure > after_success}")
+
+    if output_dir is not None:
+        step_df.to_csv(os.path.join(output_dir, "step_sizes.csv"), index=False)
+        disp_df.to_csv(os.path.join(output_dir, "displacement.csv"), index=False)
+        log.info("Saved step_sizes.csv and displacement.csv")
 
 
 if __name__ == "__main__":

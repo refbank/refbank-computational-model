@@ -75,10 +75,7 @@ def fit_listener(
     lr: float = 0.01,
     seed: int = 0,
 ) -> ListenerFit:
-    """
-    Fits literal_listener_model via SVI.
-    Raises RuntimeError if run_svi reports a NaN loss.
-    """
+    """Fits literal_listener_model via SVI. Raises RuntimeError on NaN loss."""
     result: SVIResult = run_svi(
         literal_listener_model,
         literal_listener_guide,
@@ -87,16 +84,31 @@ def fit_listener(
         lr=lr,
         seed=seed,
     )
-
-    if np.any(np.isnan(result.losses[100:])):
-        first_nan = int(np.argmax(np.isnan(result.losses[100:]))) + 100
-        raise RuntimeError(f"NaN loss at step {first_nan}")
-
     return ListenerFit(
         beta_loc=np.array(result.params["log_beta_loc"]),
         beta_scale=np.array(result.params["log_beta_scale"]),
         mu_beta=float(result.params["mu_beta_loc"]),
         sigma_beta=float(np.exp(result.params["sigma_beta_loc"])),
+    )
+
+
+def save_listener_fit(fit: ListenerFit, path: str) -> None:
+    np.savez(
+        path,
+        beta_loc=fit.beta_loc,
+        beta_scale=fit.beta_scale,
+        mu_beta=np.array(fit.mu_beta),
+        sigma_beta=np.array(fit.sigma_beta),
+    )
+
+
+def load_listener_fit(path: str) -> ListenerFit:
+    d = np.load(path)
+    return ListenerFit(
+        beta_loc=d["beta_loc"],
+        beta_scale=d["beta_scale"],
+        mu_beta=float(d["mu_beta"]),
+        sigma_beta=float(d["sigma_beta"]),
     )
 
 

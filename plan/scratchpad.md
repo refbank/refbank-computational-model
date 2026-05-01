@@ -1,9 +1,13 @@
 # Scratchpad
 
-## Current position: pipeline runs end-to-end; ready for cluster
+## Current position: lax.scan in; cluster script ready
 
-All 44 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
+All 46 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
 analysis) runs on real Redivis data via `script/run_pipeline.py`.
+
+`run_svi` now uses `jax.lax.scan` instead of a Python for-loop — unit tests run in ~8s
+instead of ~61s, GPU fits should be ~10-100× faster. `script/cluster_job.sh` is the SLURM
+submission script. Fits and analysis CSVs can be saved with `--output-dir`.
 
 ## How to run the pipeline
 
@@ -22,9 +26,8 @@ Config files are in `script/configs/*.toml`. Custom configs can be passed as a p
 
 ## Open questions / next steps
 
-- [ ] Implement `jax.lax.scan` in `run_svi` to replace the Python for-loop.
-  This is the key change needed before running full fits efficiently on GPU.
-  (Python loop: ~30–60 min on laptop for full step counts; `lax.scan` + GPU: ~2–4 min)
+- [ ] Make a requirements list for the cluster (Python version, JAX/CUDA version,
+  all pip packages) to confirm we have the right modules available.
 - [ ] Run full pipeline on cluster GPU and check that loss converges and analysis
   outputs make sense (step sizes decrease, displacement larger after failure).
 - [ ] Confirm: full `hawkins2020_characterizing_cued` dataset size (n_games, n_images,
@@ -32,6 +35,12 @@ Config files are in `script/configs/*.toml`. Custom configs can be passed as a p
 - [ ] Should `fit_convention` save intermediate checkpoints in case a cluster job is killed?
 
 ## Completed
+- [x] `run_svi` replaced Python for-loop with `jax.lax.scan` (NaN injection via jnp.where;
+  post-hoc NaN check); 46 unit tests pass, suite runs in ~8s
+- [x] `save_listener_fit` / `load_listener_fit` in `literal_listener.py`
+- [x] `save_convention_fit` / `load_convention_fit` in `conventional_speaker.py`
+- [x] `script/cluster_job.sh` — SLURM job script (sbatch from project root)
+- [x] `script/run_pipeline.py` updated with `--output-dir`, per-stage timing, saves fits + CSVs
 - [x] Steps 1–16 — all unit tests pass (cache, convention_model, loader, pipeline, svi)
 - [x] Steps 17–18 — `predictions.py` with `sequential_kalman_means`, `step_sizes_over_reps`,
   `semantic_displacement_after_error`; `tests/unit/test_predictions.py` all 5 pass

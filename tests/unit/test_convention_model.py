@@ -10,6 +10,8 @@ from code.models.conventional_speaker import (
     speaker_convention_model,
     ConventionFit,
     fit_convention,
+    save_convention_fit,
+    load_convention_fit,
 )
 from code.models.conventional_listener import listener_convention_model
 from code.models.literal_listener import ListenerFit
@@ -168,6 +170,28 @@ def test_listener_convention_model_no_nan_when_sigma_min_exceeds_sigma_max():
     assert not jnp.any(jnp.isnan(log_prob)), (
         "NaN log-prob when sigma_min > sigma_max — missing jnp.maximum clamp"
     )
+
+
+def test_save_load_convention_fit_roundtrip(tmp_path):
+    fit = ConventionFit(
+        speaker_m_loc=np.zeros((2, 3, 4), dtype=np.float32),
+        speaker_m_scale=np.ones((2, 3), dtype=np.float32),
+        listener_m_loc=np.ones((2, 3, 4), dtype=np.float32) * 0.5,
+        listener_m_scale=np.ones((2, 3), dtype=np.float32) * 0.2,
+        mu_i=np.zeros((3, 4), dtype=np.float32),
+        sigma_game=0.5,
+        sigma_min=0.1,
+        sigma_max=2.0,
+    )
+    path = str(tmp_path / "convention_fit.npz")
+    save_convention_fit(fit, path)
+    loaded = load_convention_fit(path)
+    np.testing.assert_array_equal(loaded.speaker_m_loc, fit.speaker_m_loc)
+    np.testing.assert_array_equal(loaded.listener_m_loc, fit.listener_m_loc)
+    np.testing.assert_array_equal(loaded.mu_i, fit.mu_i)
+    assert loaded.sigma_game == fit.sigma_game
+    assert loaded.sigma_min == fit.sigma_min
+    assert loaded.sigma_max == fit.sigma_max
 
 
 def test_fit_convention_output_shapes():

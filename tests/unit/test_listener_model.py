@@ -9,6 +9,8 @@ from code.models.literal_listener import (
     literal_listener_guide,
     compute_success_probs,
     fit_listener,
+    save_listener_fit,
+    load_listener_fit,
     ListenerFit,
 )
 
@@ -109,9 +111,24 @@ def test_compute_success_probs_high_for_clear_target():
 
 
 def test_fit_listener_raises_on_nan_loss():
-    from code.inference.svi import SVIResult
     batch = _make_batch(N=20)
-    nan_result = SVIResult(params={}, losses=np.array([1.0] * 100 + [float("nan")] * 100))
-    with patch("code.models.literal_listener.run_svi", return_value=nan_result):
+    with patch("code.models.literal_listener.run_svi",
+               side_effect=RuntimeError("NaN loss at step 150")):
         with pytest.raises(RuntimeError, match="NaN loss"):
             fit_listener(batch, n_steps=200)
+
+
+def test_save_load_listener_fit_roundtrip(tmp_path):
+    fit = ListenerFit(
+        beta_loc=np.array([1.0, 2.0, 3.0]),
+        beta_scale=np.array([0.1, 0.2, 0.3]),
+        mu_beta=0.5,
+        sigma_beta=1.2,
+    )
+    path = str(tmp_path / "listener_fit.npz")
+    save_listener_fit(fit, path)
+    loaded = load_listener_fit(path)
+    np.testing.assert_array_equal(loaded.beta_loc, fit.beta_loc)
+    np.testing.assert_array_equal(loaded.beta_scale, fit.beta_scale)
+    assert loaded.mu_beta == fit.mu_beta
+    assert loaded.sigma_beta == fit.sigma_beta

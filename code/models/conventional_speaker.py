@@ -171,6 +171,34 @@ def _extract_m_loc_scale(params: dict, batch: TrialBatch, D: int):
     return m_loc, m_scale
 
 
+def save_convention_fit(fit: ConventionFit, path: str) -> None:
+    np.savez(
+        path,
+        speaker_m_loc=fit.speaker_m_loc,
+        speaker_m_scale=fit.speaker_m_scale,
+        listener_m_loc=fit.listener_m_loc,
+        listener_m_scale=fit.listener_m_scale,
+        mu_i=fit.mu_i,
+        sigma_game=np.array(fit.sigma_game),
+        sigma_min=np.array(fit.sigma_min),
+        sigma_max=np.array(fit.sigma_max),
+    )
+
+
+def load_convention_fit(path: str) -> ConventionFit:
+    d = np.load(path)
+    return ConventionFit(
+        speaker_m_loc=d["speaker_m_loc"],
+        speaker_m_scale=d["speaker_m_scale"],
+        listener_m_loc=d["listener_m_loc"],
+        listener_m_scale=d["listener_m_scale"],
+        mu_i=d["mu_i"],
+        sigma_game=float(d["sigma_game"]),
+        sigma_min=float(d["sigma_min"]),
+        sigma_max=float(d["sigma_max"]),
+    )
+
+
 def fit_convention(
     batch: TrialBatch,
     listener_fit: ListenerFit,
