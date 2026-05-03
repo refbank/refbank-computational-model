@@ -68,6 +68,9 @@ def build_trial_batch_from_df(
     Raises KeyError("<id> not found in embeddings") for any missing image or utterance.
     Encodes game_ids, listener_ids, image_ids as contiguous integers starting from 0.
     """
+    df = df.copy()
+    df["option_set"] = df["option_set"].apply(list)
+
     for _, row in df.iterrows():
         if len(row["option_set"]) != 12:
             raise ValueError(

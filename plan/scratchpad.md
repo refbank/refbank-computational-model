@@ -24,10 +24,58 @@ submission script. Fits and analysis CSVs can be saved with `--output-dir`.
 
 Config files are in `script/configs/*.toml`. Custom configs can be passed as a path.
 
+## How to run on the cluster
+
+**Step 1 — on the laptop** (once, to populate `data/`):
+```bash
+.venv/bin/python script/run_pipeline.py --config full_gpu
+# saves data/hawkins2020_characterizing_cued_joined.parquet + data/embeddings/*.npz
+```
+
+**Step 2 — rsync to cluster:**
+```bash
+rsync -av data/ cluster:/path/to/project/data/
+```
+
+**Step 3 — on the cluster** (no Redivis, no CLIP encoder needed):
+```bash
+sbatch script/cluster_job.sh
+# uses --no-fetch; raises immediately with a clear message if any embeddings are missing
+```
+
+Results go to `results/run_<JOBID>/`: `listener_fit.npz`, `convention_fit.npz`,
+`step_sizes.csv`, `displacement.csv`.
+
+## Cluster setup (working as of 2026-05-01)
+
+Cluster runs CentOS 7 (glibc 2.17), Python 3.12.1. jaxlib ≥ 0.8 requires glibc 2.28+
+so cannot be pip-installed; use the pre-built cluster module instead.
+
+```bash
+module load math
+module load py-jax/0.4.36_py312   # JAX 0.4.36, Python 3.12
+```
+
+Then create venv and install remaining deps:
+```bash
+python -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install numpyro redivis transformers torch Pillow cairosvg "httpx[socks]" "numpy>=2.0" "pandas>=2.0"
+```
+
+**Redivis not needed for cluster run** — use cached embeddings and data already in the
+repo. The pipeline can be run directly from cached fixtures without fetching from Redivis.
+
+Submit with: `sbatch script/cluster_job.sh` (edit `cluster_job.sh` to add
+`module load math` and `module load py-jax/0.4.36_py312` before activating the venv).
+
+**pyproject.toml note**: `jax[cpu]==0.9.2` is the laptop version; cluster uses 0.4.36
+from the module. Don't `pip install -e .` on the cluster.
+
 ## Open questions / next steps
 
-- [ ] Make a requirements list for the cluster (Python version, JAX/CUDA version,
-  all pip packages) to confirm we have the right modules available.
+- [ ] Update `script/cluster_job.sh` and pipeline to skip Redivis fetch and use
+  cached data/embeddings directly (Redivis not needed on cluster).
 - [ ] Run full pipeline on cluster GPU and check that loss converges and analysis
   outputs make sense (step sizes decrease, displacement larger after failure).
 - [ ] Confirm: full `hawkins2020_characterizing_cued` dataset size (n_games, n_images,

@@ -12,6 +12,12 @@ Config files live in script/configs/. See plan/compute_plan.md for cluster setup
 Redivis will open a browser auth window on first use.
 Images and embeddings are cached in data/ so subsequent runs are faster.
 
+--no-fetch skips Redivis entirely and loads from cached files. Use this on the cluster
+after running once locally to populate data/. Requires:
+  data/{STUDY_ID}_joined.parquet   (or --data-parquet PATH)
+  data/embeddings/{STUDY_ID}_images.npz
+  data/embeddings/{STUDY_ID}_texts.npz
+
 If --output-dir is given, saves listener_fit.npz, convention_fit.npz,
 step_sizes.csv, and displacement.csv there for offline analysis.
 """
@@ -23,6 +29,7 @@ import time
 import tomllib
 
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -31,12 +38,8 @@ FIXTURES_DIR = os.path.join(
 )
 CONFIGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
 
-import redivis
-
-from code.prep_data.redivis_client import fetch_tables, download_images
 from code.prep_data.loader import join_tables
 from code.prep_data.pipeline import build_trial_batch_from_df
-from code.embeddings.clip_encoder import CLIPEncoder
 from code.embeddings.cache import EmbeddingCache, embeddings_for_ids
 from code.models.literal_listener import (
     fit_listener,
@@ -58,6 +61,7 @@ STUDY_ID = "hawkins2020_characterizing_cued"
 DATA_DIR = "data"
 IMAGE_DIR = os.path.join(DATA_DIR, "images", STUDY_ID)
 CACHE_DIR = os.path.join(DATA_DIR, "embeddings")
+JOINED_PARQUET = os.path.join(DATA_DIR, f"{STUDY_ID}_joined.parquet")
 
 
 def load_config(name_or_path: str) -> dict:
@@ -81,12 +85,37 @@ def _elapsed(t0: float) -> str:
     return f"{secs / 60:.1f}min"
 
 
+def _load_cached_embeddings(
+    ids: list[str],
+    cache_path: str,
+    label: str,
+) -> dict[str, np.ndarray]:
+    cache = EmbeddingCache(cache_path)
+    found, missing = cache.get(ids)
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} {label} embeddings missing from cache at {cache_path}. "
+            f"Run without --no-fetch first to populate the cache."
+        )
+    return found
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RefBank model pipeline")
     parser.add_argument(
         "--config",
         default="quick_cpu",
         help="Config name (looks in script/configs/) or path to a .toml file",
+    )
+    parser.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="Skip Redivis fetch and CLIP encoding; load from cached parquet and embeddings",
+    )
+    parser.add_argument(
+        "--data-parquet",
+        default=JOINED_PARQUET,
+        help=f"Parquet file to load when --no-fetch is set (default: {JOINED_PARQUET})",
     )
     parser.add_argument(
         "--output-dir",
@@ -109,62 +138,114 @@ def main() -> None:
 
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    # --- auth ---
-    log.info("Authenticating with Redivis (browser window will open if needed)...")
-    redivis.authenticate()
+    if args.no_fetch:
+        # --- load from cache (no Redivis, no CLIP encoder) ---
+        if not os.path.exists(args.data_parquet):
+            raise FileNotFoundError(
+                f"Cached parquet not found: {args.data_parquet}\n"
+                f"Run without --no-fetch first to populate it."
+            )
+        log.info("Loading joined data from %s ...", args.data_parquet)
+        df = pd.read_parquet(args.data_parquet)
+        log.info("Loaded %d rows", len(df))
 
-    # --- fetch tabular data ---
-    t0 = time.time()
-    log.info("Fetching tables for %s...", STUDY_ID)
-    trials_df, messages_df, choices_df = fetch_tables(STUDY_ID)
-    log.info(
-        "Fetched: %d trials  %d messages  %d choices  (%s)",
-        len(trials_df), len(messages_df), len(choices_df), _elapsed(t0),
-    )
-    log.info("trials columns:  %s", list(trials_df.columns))
-    log.info("messages columns: %s", list(messages_df.columns))
-    log.info("choices columns:  %s", list(choices_df.columns))
-    if len(trials_df):
-        log.info("trials sample:\n%s", trials_df.head(2).to_string())
-    if len(choices_df):
-        log.info("choices sample:\n%s", choices_df.head(2).to_string())
+        if n_games > 0:
+            first_games = df["game_id"].unique()[:n_games]
+            df = df[df["game_id"].isin(first_games)].reset_index(drop=True)
+            log.info("Using %d games, %d trial-listener rows", len(first_games), len(df))
+        else:
+            log.info("Using all %d games, %d trial-listener rows", df["game_id"].nunique(), len(df))
 
-    log.info("Joining tables...")
-    df = join_tables(trials_df, messages_df, choices_df)
-    log.info("After join: %d rows", len(df))
+        all_image_ids = list({img for opts in df["option_set"] for img in opts})
+        utterances = df["utterance"].unique().tolist()
 
-    if n_games > 0:
-        first_games = df["game_id"].unique()[:n_games]
-        df = df[df["game_id"].isin(first_games)].reset_index(drop=True)
-        log.info("Using %d games, %d trial-listener rows", len(first_games), len(df))
+        log.info("Loading image embeddings from cache...")
+        image_embs = _load_cached_embeddings(
+            all_image_ids,
+            os.path.join(CACHE_DIR, f"{STUDY_ID}_images.npz"),
+            "image",
+        )
+        log.info("Loading text embeddings from cache...")
+        text_embs = _load_cached_embeddings(
+            utterances,
+            os.path.join(CACHE_DIR, f"{STUDY_ID}_texts.npz"),
+            "text",
+        )
+
     else:
-        log.info("Using all %d games, %d trial-listener rows", df["game_id"].nunique(), len(df))
+        # --- full fetch path ---
+        import redivis
+        from code.prep_data.redivis_client import fetch_tables, download_images
+        from code.embeddings.clip_encoder import CLIPEncoder
 
-    # --- download images (cached after first run) ---
-    log.info("Downloading images to %s/ ...", IMAGE_DIR)
-    image_paths = download_images(STUDY_ID, IMAGE_DIR, overwrite=False)
-    log.info("%d images available", len(image_paths))
+        log.info("Authenticating with Redivis (browser window will open if needed)...")
+        redivis.authenticate()
 
-    # --- compute embeddings (cached in .npz files) ---
-    log.info("Loading CLIP encoder (downloads model on first run)...")
-    encoder = CLIPEncoder()
+        t0 = time.time()
+        log.info("Fetching tables for %s...", STUDY_ID)
+        trials_df, messages_df, choices_df = fetch_tables(STUDY_ID)
+        log.info(
+            "Fetched: %d trials  %d messages  %d choices  (%s)",
+            len(trials_df), len(messages_df), len(choices_df), _elapsed(t0),
+        )
+        log.info("trials columns:  %s", list(trials_df.columns))
+        log.info("messages columns: %s", list(messages_df.columns))
+        log.info("choices columns:  %s", list(choices_df.columns))
+        if len(trials_df):
+            log.info("trials sample:\n%s", trials_df.head(2).to_string())
+        if len(choices_df):
+            log.info("choices sample:\n%s", choices_df.head(2).to_string())
 
-    img_cache = EmbeddingCache(os.path.join(CACHE_DIR, f"{STUDY_ID}_images.npz"))
-    all_image_ids = list({img for opts in df["option_set"] for img in opts})
+        log.info("Joining tables...")
+        df = join_tables(trials_df, messages_df, choices_df)
+        log.info("After join: %d rows", len(df))
 
-    def image_encoder_fn(ids: list[str]) -> np.ndarray:
-        paths = [image_paths[img_id] for img_id in ids]
-        return encoder.encode_images(paths)
+        # Save full joined df before any n_games filter so --no-fetch can use it
+        os.makedirs(DATA_DIR, exist_ok=True)
+        df.to_parquet(JOINED_PARQUET, index=False)
+        log.info("Saved joined data to %s", JOINED_PARQUET)
 
-    t0 = time.time()
-    log.info("Encoding %d distinct images...", len(all_image_ids))
-    image_embs = embeddings_for_ids(all_image_ids, img_cache, image_encoder_fn)
+        if n_games > 0:
+            first_games = df["game_id"].unique()[:n_games]
+            df = df[df["game_id"].isin(first_games)].reset_index(drop=True)
+            log.info("Using %d games, %d trial-listener rows", len(first_games), len(df))
+        else:
+            log.info("Using all %d games, %d trial-listener rows", df["game_id"].nunique(), len(df))
 
-    text_cache = EmbeddingCache(os.path.join(CACHE_DIR, f"{STUDY_ID}_texts.npz"))
-    utterances = df["utterance"].unique().tolist()
-    log.info("Encoding %d distinct utterances...", len(utterances))
-    text_embs = embeddings_for_ids(utterances, text_cache, encoder.encode_texts)
-    log.info("Embeddings ready (%s)", _elapsed(t0))
+        log.info("Downloading images to %s/ ...", IMAGE_DIR)
+        image_paths = download_images(STUDY_ID, IMAGE_DIR, overwrite=False)
+        log.info("%d images available", len(image_paths))
+
+        log.info("Loading CLIP encoder (downloads model on first run)...")
+        encoder = CLIPEncoder()
+
+        img_cache = EmbeddingCache(os.path.join(CACHE_DIR, f"{STUDY_ID}_images.npz"))
+        all_image_ids = list({img for opts in df["option_set"] for img in opts})
+
+        def image_encoder_fn(ids: list[str]) -> np.ndarray:
+            paths = [image_paths[img_id] for img_id in ids]
+            return encoder.encode_images(paths)
+
+        t0 = time.time()
+        log.info("Encoding %d distinct images...", len(all_image_ids))
+        image_embs = embeddings_for_ids(all_image_ids, img_cache, image_encoder_fn)
+
+        text_cache = EmbeddingCache(os.path.join(CACHE_DIR, f"{STUDY_ID}_texts.npz"))
+        utterances = df["utterance"].unique().tolist()
+        log.info("Encoding %d distinct utterances...", len(utterances))
+        text_embs = embeddings_for_ids(utterances, text_cache, encoder.encode_texts)
+        log.info("Embeddings ready (%s)", _elapsed(t0))
+
+        # Save 5-game fixtures for integration tests
+        if n_games == 5:
+            os.makedirs(FIXTURES_DIR, exist_ok=True)
+            df.to_parquet(os.path.join(FIXTURES_DIR, "hawkins2020_5games.parquet"), index=False)
+            np.savez(os.path.join(FIXTURES_DIR, "hawkins2020_images.npz"), **image_embs)
+            np.savez(
+                os.path.join(FIXTURES_DIR, "hawkins2020_texts.npz"),
+                **{k: v for k, v in text_embs.items() if k in set(df["utterance"])},
+            )
+            log.info("Fixtures saved to %s/", FIXTURES_DIR)
 
     # --- build batch ---
     log.info("Building TrialBatch...")
@@ -173,18 +254,6 @@ def main() -> None:
         "Batch: %d trials  %d games  %d images  %d listeners",
         batch.utterance_emb.shape[0], batch.n_games, batch.n_images, batch.n_listeners,
     )
-
-    # --- save fixtures for integration tests ---
-    if n_games == 5:
-        os.makedirs(FIXTURES_DIR, exist_ok=True)
-        df_path = os.path.join(FIXTURES_DIR, "hawkins2020_5games.parquet")
-        df.to_parquet(df_path, index=False)
-        np.savez(os.path.join(FIXTURES_DIR, "hawkins2020_images.npz"), **image_embs)
-        np.savez(
-            os.path.join(FIXTURES_DIR, "hawkins2020_texts.npz"),
-            **{k: v for k, v in text_embs.items() if k in set(df["utterance"])},
-        )
-        log.info("Fixtures saved to %s/", FIXTURES_DIR)
 
     # --- Stage 1: literal listener ---
     t0 = time.time()

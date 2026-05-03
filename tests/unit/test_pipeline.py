@@ -176,3 +176,12 @@ def test_build_trial_batch_from_df_ids_are_contiguous():
     assert set(np.array(batch.game_ids)) == set(range(batch.n_games))
     assert set(np.array(batch.listener_ids)) == set(range(batch.n_listeners))
     assert set(np.array(batch.image_ids)) == set(range(batch.n_images))
+
+
+def test_build_trial_batch_from_df_option_set_as_numpy_array():
+    """Parquet round-trips option_set as np.ndarray; build_trial_batch_from_df must handle it."""
+    df, image_embs, utt_embs = _make_df(n_trials=12, D=8)
+    df = df.copy()
+    df["option_set"] = df["option_set"].apply(np.array)
+    batch = build_trial_batch_from_df(df, image_embs, utt_embs)
+    assert batch.utterance_emb.shape[0] == 12
