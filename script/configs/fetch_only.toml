@@ -1,0 +1,7 @@
+# Fetch all data from Redivis and cache embeddings — no meaningful fitting.
+# Use this on a laptop to populate data/ before rsyncing to the cluster.
+description = "Fetch and embed all data (CPU)"
+
+n_games = 0           # 0 = use all games in the dataset
+listener_steps = 1
+convention_steps = 1

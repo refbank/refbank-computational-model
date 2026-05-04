@@ -30,9 +30,14 @@ def join_tables(
     with_utterances = trials_df.merge(utterances, on="trial_id", how="left")
     with_choices = with_utterances.merge(choices_df, on="trial_id", how="left")
 
-    missing = with_choices["listener_id"].isna().sum()
-    if missing > 0:
-        logger.warning("Dropped %d trial-listener rows with no listener choice", missing)
+    missing_utt = with_choices["utterance"].isna().sum()
+    if missing_utt > 0:
+        logger.warning("Dropped %d trial-listener rows with no utterance", missing_utt)
+        with_choices = with_choices.dropna(subset=["utterance"])
+
+    missing_choice = with_choices["listener_id"].isna().sum()
+    if missing_choice > 0:
+        logger.warning("Dropped %d trial-listener rows with no listener choice", missing_choice)
         with_choices = with_choices.dropna(subset=["listener_id"])
 
     return with_choices.reset_index(drop=True)

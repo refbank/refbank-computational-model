@@ -59,6 +59,22 @@ def test_join_tables_drops_missing_choices_with_warning(caplog):
     )
 
 
+def test_join_tables_drops_missing_utterances_with_warning(caplog):
+    trials = _trials([
+        ("t1", "g1", 1, 1, "img1", ["img1", "img2"]),
+        ("t2", "g1", 2, 2, "img1", ["img1", "img2"]),
+    ])
+    messages = _messages([("t1", 1, "hello")])  # t2 has no messages
+    choices = _choices([("t1", "l1", "img1"), ("t2", "l1", "img1")])
+
+    with caplog.at_level(logging.WARNING):
+        df = join_tables(trials, messages, choices)
+
+    assert len(df) == 1
+    assert df.iloc[0]["trial_id"] == "t1"
+    assert any("utterance" in record.message for record in caplog.records)
+
+
 def test_filter_images_top_n():
     # Each game has option_set with 2 images (no repeats within a row).
     # img1: 5 rows, img2: 4 rows, img3: 3 rows, img4: 1 row, img5: 1 row

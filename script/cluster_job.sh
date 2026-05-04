@@ -9,10 +9,8 @@
 
 # Run from the project root: sbatch script/cluster_job.sh
 #
-# Before submitting, pull the container once (store in $GROUP_HOME to avoid quota):
-#   apptainer pull $GROUP_HOME/containers/refbank-gpu.sif docker://<dockerhub-user>/refbank-gpu:latest
-#
-# Then set CONTAINER below to the path of the .sif file.
+# Before submitting, build the container sandbox once (store in $GROUP_HOME to avoid quota):
+#   apptainer build --sandbox $GROUP_HOME/containers/refbank-gpu/ docker://vboyce/refbank-gpu:latest
 #
 # Expected wall time (lax.scan + GPU):
 #   listener fit (5000 steps):       ~30s
@@ -23,11 +21,11 @@
 
 set -euo pipefail
 
-CONTAINER="${CONTAINER:-$GROUP_HOME/containers/refbank-gpu.sif}"
+CONTAINER="${CONTAINER:-$GROUP_HOME/containers/refbank-gpu}"
 
-if [[ ! -f "$CONTAINER" ]]; then
-    echo "ERROR: container not found at $CONTAINER"
-    echo "Pull it with: apptainer pull \$GROUP_HOME/containers/refbank-gpu.sif docker://vboyce/refbank-gpu:latest"
+if [[ ! -d "$CONTAINER" ]]; then
+    echo "ERROR: container sandbox not found at $CONTAINER"
+    echo "Build it with: apptainer build --sandbox \$GROUP_HOME/containers/refbank-gpu/ docker://vboyce/refbank-gpu:latest"
     exit 1
 fi
 

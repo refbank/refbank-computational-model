@@ -47,17 +47,25 @@ class CLIPEncoder:
         norms = np.linalg.norm(emb, axis=1, keepdims=True)
         return emb / norms
 
-    def encode_texts(self, texts: list[str]) -> np.ndarray:
-        """Returns (N, D) L2-normalized text embeddings."""
-        inputs = self._processor(
-            text=texts, return_tensors="pt", padding=True, truncation=True
-        )
-        with torch.no_grad():
-            text_out = self._model.text_model(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
+    def encode_texts(self, texts: list[str], batch_size: int = 128) -> np.ndarray:
+        """Returns (N, D) L2-normalized text embeddings, processed in batches."""
+        for i, t in enumerate(texts):
+            if t is None or (not isinstance(t, str) and not isinstance(t, np.str_)):
+                raise ValueError(f"encode_texts: expected str at index {i}, got {type(t).__name__}: {t!r}")
+        texts = [str(t) for t in texts]
+        all_embs = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            inputs = self._processor(
+                text=batch, return_tensors="pt", padding=True, truncation=True
             )
-            features = self._model.text_projection(text_out.pooler_output)
-        emb = features.numpy().astype(np.float32)
-        norms = np.linalg.norm(emb, axis=1, keepdims=True)
-        return emb / norms
+            with torch.no_grad():
+                text_out = self._model.text_model(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                )
+                features = self._model.text_projection(text_out.pooler_output)
+            emb = features.numpy().astype(np.float32)
+            norms = np.linalg.norm(emb, axis=1, keepdims=True)
+            all_embs.append(emb / norms)
+        return np.concatenate(all_embs, axis=0)
