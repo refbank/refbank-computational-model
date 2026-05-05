@@ -1,9 +1,9 @@
 # Scratchpad
 
-## Current position: full GPU run complete; analysis tooling next
+## Current position: visualisation done; sigma collapse to fix next
 
-All 48 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
-analysis) runs end-to-end and has been validated on the cluster GPU.
+All 58 unit tests pass. The full pipeline runs end-to-end and has been validated on the
+cluster GPU. Visualisation tooling is complete. Next priority: fix sigma collapse.
 
 Full dataset: 5971 trial-listener rows, 83 games, 12 images, 83 listeners. Listener fit
 takes ~6.6s, convention fit ~14.6s on GPU.
@@ -72,12 +72,20 @@ from the module. Don't `pip install -e .` on the cluster.
 
 ## Open questions / next steps
 
-- [ ] Fix `sigma_max < sigma_min` model pathology — see Known Issues below.
-- [ ] Build analysis/visualization tooling: convention trajectory plots (t-SNE) and
-  predicted vs observed accuracy (calibration + learning curve by rep_num).
+- [ ] Fix sigma collapse — see Known Issues below. **Do this next.**
+- [ ] Build predicted vs observed accuracy analysis (calibration + learning curve by rep_num).
+- [ ] Utterance scoring: use the convention model's emission to score actual vs counterfactual
+  alternative utterances (e.g. utterances from other games for the same image). Useful for
+  checking whether within-game conventions are more distinctive than across-game utterances.
 - [ ] Should `fit_convention` save intermediate checkpoints in case a cluster job is killed?
 
 ## Completed
+- [x] `script/visualize.py` — generates interactive HTML plots from a results dir;
+  `code/analysis/visualization.py` — `compute_tsne_coords`, `plot_overview`, `plot_game`;
+  9 tests pass; t-SNE cached to `tsne_coords.parquet` after first run
+- [x] Fix `sigma_max < sigma_min` ordering bug (job 23807580) — reparametrised to
+  `sigma_max = sigma_min + sigma_delta`; 2 new tests; 58 unit tests total
+- [x] Second GPU run (job 23851534): ordering fix confirmed, but sigma collapse emerged
 - [x] Full GPU pipeline run on cluster (job 23807580): step sizes decrease (0.048→0.009),
   displacement larger after failure (0.49 vs 0.30) — qualitative checks pass
 - [x] Data preloaded into repo; cluster runs with `--no-fetch` (no Redivis on cluster)
@@ -101,12 +109,19 @@ from the module. Don't `pip install -e .` on the cluster.
 
 ## Known issues / bugs
 
-- **`sigma_max < sigma_min` in fitted model** (job 23807580: sigma_min=1.159,
-  sigma_max=0.509). The formula `sigma_min + (sigma_max - sigma_min)*(1-s)/s` goes
-  negative when sigma_max < sigma_min and is clamped to 1e-6, so failed utterances
-  are treated as if they must be exactly at the convention point — the opposite of the
-  intent. Fix: reparametrize so sigma_max > sigma_min is enforced, e.g. sample
-  `log_delta = log(sigma_max - sigma_min)` with sigma_max constrained above sigma_min.
+- **Sigma collapse** (job 23851534, after ordering fix): sigma_min≈1e-5,
+  sigma_max≈3e-5. The emission variance collapses to a near-point-mass, meaning the
+  model treats each utterance as essentially identical to the convention point. The
+  qualitative results still look right (step sizes decrease 0.25→0.06, displacement
+  larger after failure) but the sigma values are not meaningful.
+  Likely cause: the optimizer finds a degenerate solution where m_{g,i} drifts to fit
+  each utterance exactly, so minimal emission variance is needed. Possible fixes:
+  - Stronger priors on sigma_min / sigma_delta (e.g. HalfNormal with larger scale,
+    or a LogNormal prior with a positive mean)
+  - A prior that penalises sigma near zero (e.g. InverseGamma)
+  - Fixing sigma_min to a reasonable constant and only fitting sigma_max
+  - L2-normalising m_{g,i} after each update to keep it on the unit sphere
+  Note: the `sigma_max < sigma_min` ordering issue from job 23807580 is now fixed.
 
 ## Decisions
 
