@@ -56,8 +56,8 @@ def speaker_convention_model(
     D = mu_i_init.shape[1]
 
     sigma_game = numpyro.sample("sigma_game", dist.HalfNormal(1.0))
-    sigma_min = numpyro.sample("sigma_min", dist.HalfNormal(1.0))
-    sigma_delta = numpyro.sample("sigma_delta", dist.HalfNormal(1.0))
+    sigma_min = numpyro.sample("sigma_min", dist.LogNormal(jnp.log(jnp.array(0.3)), 0.5))
+    sigma_delta = numpyro.sample("sigma_delta", dist.LogNormal(jnp.log(jnp.array(0.7)), 0.5))
     sigma_max = numpyro.deterministic("sigma_max", sigma_min + sigma_delta)
 
     mu_i = numpyro.sample(

@@ -204,6 +204,37 @@ def test_save_load_convention_fit_roundtrip(tmp_path):
     assert loaded.sigma_max == fit.sigma_max
 
 
+def test_speaker_convention_model_sigma_min_prior_penalizes_near_zero():
+    """sigma_min prior must strongly penalize near-zero values to prevent sigma collapse.
+
+    With HalfNormal(1.0) the mode is at 0, so sigma_min=0.001 scores *higher* than
+    sigma_min=0.3. With a LogNormal prior the near-zero value gets a large penalty.
+    """
+    batch = _make_batch(n_games=2, n_images=2, n_reps=3, D=8)
+    mu_i_init = np.zeros((2, 8), dtype=np.float32)
+    s_t = jnp.ones(batch.utterance_emb.shape[0]) * 0.9
+
+    def get_sigma_min_log_prob(sigma_val):
+        trace = numpyro.handlers.trace(
+            numpyro.handlers.seed(
+                numpyro.handlers.condition(
+                    speaker_convention_model,
+                    {"sigma_min": jnp.array(sigma_val), "sigma_delta": jnp.array(0.7)},
+                ),
+                rng_seed=0,
+            )
+        ).get_trace(batch, s_t, mu_i_init)
+        site = trace["sigma_min"]
+        return float(site["fn"].log_prob(site["value"]))
+
+    lp_collapsed = get_sigma_min_log_prob(0.001)
+    lp_reasonable = get_sigma_min_log_prob(0.3)
+    assert lp_reasonable > lp_collapsed + 20, (
+        f"Prior should strongly penalize sigma_min≈0.001 to prevent sigma collapse; "
+        f"log_prob(0.001)={lp_collapsed:.1f}, log_prob(0.3)={lp_reasonable:.1f}"
+    )
+
+
 def test_fit_convention_output_shapes():
     batch = _make_batch(n_games=3, n_images=2, n_reps=4, D=8)
     listener_fit = ListenerFit(
