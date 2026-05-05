@@ -148,27 +148,37 @@ def test_listener_convention_model_traces():
         listener_convention_model(batch, s_t_binary, mu_i_init)
 
 
-def test_listener_convention_model_no_nan_when_sigma_min_exceeds_sigma_max():
-    """Regression: missing jnp.maximum clamp caused sqrt(negative) → NaN when
-    sigma_min > sigma_max, which can happen transiently during SVI optimization."""
-    import numpyro.handlers as handlers
-
+def test_speaker_convention_model_sigma_max_exceeds_sigma_min():
+    """Model must structurally guarantee sigma_max > sigma_min at every sample."""
     batch = _make_batch(n_games=2, n_images=2, n_reps=3, D=8)
-    N = batch.utterance_emb.shape[0]
-    # Mix of successes and failures so failure-branch (s_t=0) is exercised.
-    s_t_binary = jnp.array([0.0, 1.0] * (N // 2) + [0.0] * (N % 2))
     mu_i_init = np.zeros((2, 8), dtype=np.float32)
+    s_t = jnp.ones(batch.utterance_emb.shape[0]) * 0.9
 
-    # Condition sigma_min > sigma_max — the case that triggers negative sigma2_t.
-    with handlers.seed(rng_seed=0):
-        with handlers.condition(data={"sigma_min": jnp.array(2.0), "sigma_max": jnp.array(0.5)}):
-            trace = handlers.trace(listener_convention_model).get_trace(
-                batch, s_t_binary, mu_i_init
+    for seed in range(5):
+        with numpyro.handlers.seed(rng_seed=seed):
+            trace = numpyro.handlers.trace(speaker_convention_model).get_trace(
+                batch, s_t, mu_i_init
             )
+        sigma_min = float(trace["sigma_min"]["value"])
+        sigma_max = float(trace["sigma_max"]["value"])
+        assert sigma_max > sigma_min, (
+            f"seed={seed}: sigma_max={sigma_max:.4f} <= sigma_min={sigma_min:.4f}"
+        )
 
-    log_prob = trace["utterance_emb"]["fn"].log_prob(trace["utterance_emb"]["value"])
-    assert not jnp.any(jnp.isnan(log_prob)), (
-        "NaN log-prob when sigma_min > sigma_max — missing jnp.maximum clamp"
+
+def test_fitted_sigma_max_exceeds_sigma_min():
+    """After fitting, the constraint sigma_max > sigma_min must hold."""
+    batch = _make_batch(n_games=3, n_images=2, n_reps=4, D=8)
+    listener_fit = ListenerFit(
+        beta_loc=np.array([0.0]),
+        beta_scale=np.array([1.0]),
+        mu_beta=0.0,
+        sigma_beta=1.0,
+    )
+    mu_i_init = compute_r1_average(batch)
+    fit = fit_convention(batch, listener_fit, mu_i_init, n_steps=200, seed=0)
+    assert fit.sigma_max > fit.sigma_min, (
+        f"sigma_max={fit.sigma_max:.4f} <= sigma_min={fit.sigma_min:.4f}"
     )
 
 

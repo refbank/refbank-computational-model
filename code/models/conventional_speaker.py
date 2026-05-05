@@ -57,7 +57,8 @@ def speaker_convention_model(
 
     sigma_game = numpyro.sample("sigma_game", dist.HalfNormal(1.0))
     sigma_min = numpyro.sample("sigma_min", dist.HalfNormal(1.0))
-    sigma_max = numpyro.sample("sigma_max", dist.HalfNormal(2.0))
+    sigma_delta = numpyro.sample("sigma_delta", dist.HalfNormal(1.0))
+    sigma_max = numpyro.deterministic("sigma_max", sigma_min + sigma_delta)
 
     mu_i = numpyro.sample(
         "mu_i",
@@ -112,9 +113,9 @@ def _convention_guide(batch: TrialBatch, s_t: jnp.ndarray, mu_i_init: np.ndarray
     log_sigma_min_scale = numpyro.param(
         "log_sigma_min_scale", jnp.array(0.3), constraint=dist.constraints.positive
     )
-    log_sigma_max_loc = numpyro.param("log_sigma_max_loc", jnp.log(jnp.array(1.0)))
-    log_sigma_max_scale = numpyro.param(
-        "log_sigma_max_scale", jnp.array(0.3), constraint=dist.constraints.positive
+    log_sigma_delta_loc = numpyro.param("log_sigma_delta_loc", jnp.log(jnp.array(0.7)))
+    log_sigma_delta_scale = numpyro.param(
+        "log_sigma_delta_scale", jnp.array(0.3), constraint=dist.constraints.positive
     )
 
     numpyro.sample(
@@ -132,9 +133,9 @@ def _convention_guide(batch: TrialBatch, s_t: jnp.ndarray, mu_i_init: np.ndarray
         ),
     )
     numpyro.sample(
-        "sigma_max",
+        "sigma_delta",
         dist.TransformedDistribution(
-            dist.Normal(log_sigma_max_loc, log_sigma_max_scale),
+            dist.Normal(log_sigma_delta_loc, log_sigma_delta_scale),
             dist.transforms.ExpTransform(),
         ),
     )
@@ -259,5 +260,5 @@ def fit_convention(
         mu_i=np.array(sp["mu_i_loc"]),
         sigma_game=float(np.exp(sp["log_sigma_game_loc"])),
         sigma_min=float(np.exp(sp["log_sigma_min_loc"])),
-        sigma_max=float(np.exp(sp["log_sigma_max_loc"])),
+        sigma_max=float(np.exp(sp["log_sigma_min_loc"]) + np.exp(sp["log_sigma_delta_loc"])),
     )

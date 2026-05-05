@@ -1,13 +1,16 @@
 # Scratchpad
 
-## Current position: lax.scan in; cluster script ready
+## Current position: full GPU run complete; analysis tooling next
 
-All 46 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
-analysis) runs on real Redivis data via `script/run_pipeline.py`.
+All 48 unit tests pass. The full pipeline (fetch → embed → fit listener → fit convention →
+analysis) runs end-to-end and has been validated on the cluster GPU.
 
-`run_svi` now uses `jax.lax.scan` instead of a Python for-loop — unit tests run in ~8s
-instead of ~61s, GPU fits should be ~10-100× faster. `script/cluster_job.sh` is the SLURM
-submission script. Fits and analysis CSVs can be saved with `--output-dir`.
+Full dataset: 5971 trial-listener rows, 83 games, 12 images, 83 listeners. Listener fit
+takes ~6.6s, convention fit ~14.6s on GPU.
+
+`run_svi` uses `jax.lax.scan` — unit tests run in ~8s. `script/cluster_job.sh` submits
+via SLURM. Data is preloaded into the repo so the cluster runs with `--no-fetch`.
+Fits and analysis CSVs saved to `results/run_<JOBID>/`.
 
 ## How to run the pipeline
 
@@ -26,25 +29,20 @@ Config files are in `script/configs/*.toml`. Custom configs can be passed as a p
 
 ## How to run on the cluster
 
-**Step 1 — on the laptop** (once, to populate `data/`):
-```bash
-.venv/bin/python script/run_pipeline.py --config full_gpu
-# saves data/hawkins2020_characterizing_cued_joined.parquet + data/embeddings/*.npz
-```
+Data and embeddings are preloaded into the repo (`data/` directory), so no Redivis fetch
+needed on the cluster. Just:
 
-**Step 2 — rsync to cluster:**
-```bash
-rsync -av data/ cluster:/path/to/project/data/
-```
-
-**Step 3 — on the cluster** (no Redivis, no CLIP encoder needed):
 ```bash
 sbatch script/cluster_job.sh
-# uses --no-fetch; raises immediately with a clear message if any embeddings are missing
 ```
 
 Results go to `results/run_<JOBID>/`: `listener_fit.npz`, `convention_fit.npz`,
 `step_sizes.csv`, `displacement.csv`.
+
+To refresh the preloaded data (on laptop, with Redivis access):
+```bash
+.venv/bin/python script/run_pipeline.py --config fetch_only
+```
 
 ## Cluster setup (working as of 2026-05-01)
 
@@ -74,17 +72,18 @@ from the module. Don't `pip install -e .` on the cluster.
 
 ## Open questions / next steps
 
-- [ ] Update `script/cluster_job.sh` and pipeline to skip Redivis fetch and use
-  cached data/embeddings directly (Redivis not needed on cluster).
-- [ ] Run full pipeline on cluster GPU and check that loss converges and analysis
-  outputs make sense (step sizes decrease, displacement larger after failure).
-- [ ] Confirm: full `hawkins2020_characterizing_cued` dataset size (n_games, n_images,
-  n_trials) — needed to estimate GPU RAM and time precisely.
+- [ ] Fix `sigma_max < sigma_min` model pathology — see Known Issues below.
+- [ ] Build analysis/visualization tooling: convention trajectory plots (t-SNE) and
+  predicted vs observed accuracy (calibration + learning curve by rep_num).
 - [ ] Should `fit_convention` save intermediate checkpoints in case a cluster job is killed?
 
 ## Completed
+- [x] Full GPU pipeline run on cluster (job 23807580): step sizes decrease (0.048→0.009),
+  displacement larger after failure (0.49 vs 0.30) — qualitative checks pass
+- [x] Data preloaded into repo; cluster runs with `--no-fetch` (no Redivis on cluster)
+- [x] `script/configs/fetch_only.toml` added for refreshing preloaded data on laptop
 - [x] `run_svi` replaced Python for-loop with `jax.lax.scan` (NaN injection via jnp.where;
-  post-hoc NaN check); 46 unit tests pass, suite runs in ~8s
+  post-hoc NaN check); 48 unit tests pass, suite runs in ~8s
 - [x] `save_listener_fit` / `load_listener_fit` in `literal_listener.py`
 - [x] `save_convention_fit` / `load_convention_fit` in `conventional_speaker.py`
 - [x] `script/cluster_job.sh` — SLURM job script (sbatch from project root)
@@ -100,13 +99,21 @@ from the module. Don't `pip install -e .` on the cluster.
   (200-step fits; skipped when fixtures absent)
 - [x] `plan/compute_plan.md` — computational footprint analysis and cluster setup notes
 
-## Known issues / decisions
+## Known issues / bugs
+
+- **`sigma_max < sigma_min` in fitted model** (job 23807580: sigma_min=1.159,
+  sigma_max=0.509). The formula `sigma_min + (sigma_max - sigma_min)*(1-s)/s` goes
+  negative when sigma_max < sigma_min and is clamped to 1e-6, so failed utterances
+  are treated as if they must be exactly at the convention point — the opposite of the
+  intent. Fix: reparametrize so sigma_max > sigma_min is enforced, e.g. sample
+  `log_delta = log(sigma_max - sigma_min)` with sigma_max constrained above sigma_min.
+
+## Decisions
 
 - `sequential_kalman_means` uses binary correctness (selected_idx == target_idx) for s_t
   in both speaker and listener roles. Schema said speaker should use `compute_success_probs`
   (L_0 score), but that requires `ListenerFit` which isn't in `ConventionFit`. Binary
   correctness is a reasonable proxy and keeps the function self-contained.
-  Revisit if this causes INT-2 to fail.
 - `semantic_displacement_after_error` takes a `fit` param for API consistency but doesn't
   use it (displacement is data-level; prev_success is binary from batch).
 - The Python for-loop in `run_svi` is slow at D=512 scale. This caused the laptop to hang

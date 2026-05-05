@@ -20,7 +20,8 @@ def listener_convention_model(
 
     sigma_game = numpyro.sample("sigma_game", dist.HalfNormal(1.0))
     sigma_min = numpyro.sample("sigma_min", dist.HalfNormal(1.0))
-    sigma_max = numpyro.sample("sigma_max", dist.HalfNormal(2.0))
+    sigma_delta = numpyro.sample("sigma_delta", dist.HalfNormal(1.0))
+    sigma_max = numpyro.deterministic("sigma_max", sigma_min + sigma_delta)
 
     mu_i = numpyro.sample(
         "mu_i",
