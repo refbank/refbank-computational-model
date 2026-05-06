@@ -1,9 +1,9 @@
 # Scratchpad
 
-## Current position: visualisation done; sigma collapse to fix next
+## Current position: sigma collapse fix pending cluster validation; viz improved
 
-All 58 unit tests pass. The full pipeline runs end-to-end and has been validated on the
-cluster GPU. Visualisation tooling is complete. Next priority: fix sigma collapse.
+All 68 unit tests pass. Sigma collapse fix deployed (LogNormal priors); needs a cluster
+run to verify. Visualisation improved with arrows, halo, white background, better legend.
 
 Full dataset: 5971 trial-listener rows, 83 games, 12 images, 83 listeners. Listener fit
 takes ~6.6s, convention fit ~14.6s on GPU.
@@ -72,14 +72,139 @@ from the module. Don't `pip install -e .` on the cluster.
 
 ## Open questions / next steps
 
-- [ ] Fix sigma collapse — see Known Issues below. **Do this next.**
-- [ ] Build predicted vs observed accuracy analysis (calibration + learning curve by rep_num).
-- [ ] Utterance scoring: use the convention model's emission to score actual vs counterfactual
-  alternative utterances (e.g. utterances from other games for the same image). Useful for
-  checking whether within-game conventions are more distinctive than across-game utterances.
+### Immediate
+- [ ] Run cluster job to verify sigma collapse fix (LogNormal priors). Check that sigma_min
+  and sigma_max are in a plausible range (not 1e-5).
+
+### Visualisation — overview.html improvements
+- [ ] Separate image / rep_num / game dropdowns (currently one combined dropdown).
+  When filtering by image, only that image's prototype (◆) should be shown; all others hidden.
+- [ ] Per-game t-SNE tab: a second view where t-SNE is computed separately per game
+  (so each game's utterances fill the space rather than being scattered in a global embedding).
+  Tabs could be faked with Plotly button groups toggling div visibility in HTML.
+- [ ] Refresh overview.html: `.venv/bin/python script/visualize.py --results results/run_<JOBID>`
+  Delete `tsne_coords.parquet` first to force t-SNE recomputation.
+
+### Dashboard / results presentation
+- [ ] Build a results dashboard — either GitHub Pages (static HTML) or locally hosted.
+  Should consolidate all plots below into one place.
+- [ ] **Predicted vs observed accuracy**: model-implied L_0 success probability vs
+  empirical listener accuracy, broken out by rep_num (calibration curve + learning curve).
+- [ ] **Counterfactual utility plot**: emission log-likelihood of the observed utterance
+  under the convention model vs counterfactual utterances (e.g. utterances from other games
+  for the same image, or randomly sampled utterances). Shows whether within-game conventions
+  are more distinctive / higher-utility than cross-game utterances.
+- [ ] **Step size / convergence plot**: one of:
+  - Embedding distance between consecutive rep utterances ($\|z(u_t) - z(u_{t-1})\|$)
+    over rep_num, averaged across games/images — should decrease as conventions form.
+  - $\sigma^2_t$ (emission variance) over rep_num — should narrow as s_t rises and
+    conventions tighten. Shows the model's "confidence" in the convention growing.
+  Both are already partially computable from existing `step_sizes_over_reps` and
+  `semantic_displacement_after_error` outputs; need a plot function.
+
+### Evaluation
+- [ ] **Log-likelihood on held-out data**: compute held-out log-likelihood as the primary
+  scalar metric for model quality. Concretely: for listener model, log P(selected_idx | utterance,
+  options, β); for convention model, log P(utterance_emb | m_{g,i}, σ²_t). Higher = better.
+- [ ] **Many-fold 80/20 splits**: split at the game level (keep all reps of a game together
+  to avoid leakage). Fit on 80% of games, evaluate log-likelihood on held-out 20%. Repeat
+  many times (e.g. 20 folds) to get a stable estimate with error bars. This is the main
+  robustness check for both the listener and convention models.
+  - Split unit: game (not trial), so convention structure is intact in each fold.
+  - For listener model: β_ℓ are game-specific — held-out listeners need new β estimates
+    or held-out must be defined differently (TBD).
+  - Log-likelihood on held-out utterance embeddings (convention model) is probably
+    the most interpretable metric.
+
+### Analysis (other)
+- [ ] Utterance scoring: use convention model emission to score actual vs counterfactual
+  utterances (e.g. other games' utterances for the same image). Tests whether within-game
+  conventions are more distinctive than across-game utterances.
 - [ ] Should `fit_convention` save intermediate checkpoints in case a cluster job is killed?
 
+---
+
+## Model development roadmap (post-eval)
+
+Do not start on these until 80/20 cross-validation log-likelihood is working and giving
+stable numbers. The eval harness is the measuring stick for all model changes below.
+
+### Role / player identity
+
+- **Describer / matcher in one embedding space**: currently the model fits separate
+  speaker-side and listener-side conventions independently. A cleaner alternative is a
+  single model with a `role` or `player_id` variable, where the same convention space is
+  shared but the update signal differs by role (speaker: utterance emission; listener:
+  choice likelihood). `player_id` could also index per-player deviations (see M4 below).
+- **Role switch asymmetry**: in RefBank games one player is always the describer and the
+  other(s) are matchers. The current model treats them fully separately. Consider whether
+  the convention for an image should be the same object for both roles (shared latent m_{g,i})
+  or role-specific. Shared is more parsimonious; role-specific is more flexible.
+
+### Initialization
+
+- **Current**: μ_i initialized from the mean of rep_num=1 utterance embeddings across games
+  (compute_r1_average). Reasonable but depends entirely on round-1 utterances.
+- **Alternative**: initialize μ_i from the CLIP image embedding directly (z(image_i)),
+  projecting into text space via the text encoder. Would give a truly prior-to-data starting
+  point. Downside: image and text embeddings are not perfectly aligned in CLIP space.
+- **Alternative**: random init, let SVI find μ_i from scratch. Slower convergence but no
+  data-dependent initialization bias.
+- Decision point: does initialization affect final fitted values (not just convergence speed)?
+  Check by comparing held-out log-likelihood across inits.
+
+### Ablations (compare by held-out log-likelihood)
+
+- **Complete-pooling**: single shared μ_i per image, no game-specific δ_{g,i}. All games
+  share one convention. Baseline: can it explain listener choices at all?
+- **No-pooling**: independent m_{k,i} per (game, image), no shared μ_i prior. No
+  cross-game generalization. Upper bound on per-game fit, but can't generalize.
+- **Fixed sigma**: remove accuracy-dependent emission (σ²_t = constant). Does the
+  accuracy-weighting actually matter for convention fit quality?
+- **No hierarchical β**: single shared β across all listeners instead of per-listener
+  LogNormal hierarchy. Tests whether listener heterogeneity matters.
+- **CLIP variant**: `openai/clip-vit-base-patch32` is the current default. Compare with
+  `openai/clip-vit-large-patch14` or a language-only text encoder (e.g. sentence-transformers)
+  to check sensitivity to embedding space.
+
+### Additions / extensions (from minimal_model_schema.md out-of-scope list)
+
+- **M1 — Learned projection P**: low-rank matrix P ∈ R^{d×D} applied to CLIP embeddings
+  before computing cosine similarities. Addresses CLIP's possible misalignment between
+  image and text spaces. Add if raw CLIP listener fit is poor. d is a hyperparameter.
+- **M2 — Memory decay**: down-weight older observations in the convention update
+  (β_memory ∈ [0,1]; paper uses 0.8). Currently β=1 (uniform). Add if earlier rounds
+  appear empirically less predictive. Applies inside sequential_kalman_means.
+- **M4 — Player-specific effects**: per-player deviation δ_{p,i} in the convention.
+  Would let individual players drift from the game-level convention. Complex but may be
+  needed if there's high within-game heterogeneity.
+- **M5 — Repulsive failure likelihood**: add an anti-evidence term so failed utterances
+  actively push m_{g,i} away (not just fail to update it). More faithful to RSA; harder
+  to implement in the Gaussian emission framework.
+- **OQ11 — Pragmatic L_1 listener**: replace literal L_0 with a listener that reasons
+  about the speaker. More principled but requires a speaker model (see below).
+- **Speaker generation**: given a convention m_{g,i}, generate predicted utterances via
+  proposal (language model) + rerank (speaker utility). Would enable direct utterance
+  prediction, not just convention tracking. Deferred; requires LM integration.
+
+### Open decision points (from plan.md / model_components.md)
+
+- Multi-listener trials: each (trial, listener) is currently an independent data point.
+  Should listener choices within the same trial be modeled jointly (e.g. correlated noise)?
+- Image filter threshold: top_n=12 for early iteration. Once eval is stable, test whether
+  expanding the image set changes results.
+- Whether C3 (hierarchical generalization, cross-game Θ) is identifiable from RefBank given
+  that each game has the same 12 images — effectively partial pooling is already doing this.
+
 ## Completed
+- [x] Fix sigma collapse (code side): changed sigma_min and sigma_delta priors from
+  HalfNormal(1.0) to LogNormal(log(0.3), 0.5) / LogNormal(log(0.7), 0.5) in both
+  speaker and listener convention models. Regression test added. 68 unit tests pass.
+  **Still needs cluster run to confirm empirically.**
+- [x] Visualisation improvements (2026-05-05): bigger figures (1200×900 / 1100×850),
+  white background, more legend entries (correct/incorrect/convention/prototype symbols),
+  rep-to-rep arrows via Plotly annotations (game dropdown triggers annotation update),
+  rep 1 halo ring (marker.line.width=3 for rep_num=1 only). 18 viz tests pass.
 - [x] `script/visualize.py` — generates interactive HTML plots from a results dir;
   `code/analysis/visualization.py` — `compute_tsne_coords`, `plot_overview`, `plot_game`;
   9 tests pass; t-SNE cached to `tsne_coords.parquet` after first run
@@ -109,19 +234,9 @@ from the module. Don't `pip install -e .` on the cluster.
 
 ## Known issues / bugs
 
-- **Sigma collapse** (job 23851534, after ordering fix): sigma_min≈1e-5,
-  sigma_max≈3e-5. The emission variance collapses to a near-point-mass, meaning the
-  model treats each utterance as essentially identical to the convention point. The
-  qualitative results still look right (step sizes decrease 0.25→0.06, displacement
-  larger after failure) but the sigma values are not meaningful.
-  Likely cause: the optimizer finds a degenerate solution where m_{g,i} drifts to fit
-  each utterance exactly, so minimal emission variance is needed. Possible fixes:
-  - Stronger priors on sigma_min / sigma_delta (e.g. HalfNormal with larger scale,
-    or a LogNormal prior with a positive mean)
-  - A prior that penalises sigma near zero (e.g. InverseGamma)
-  - Fixing sigma_min to a reasonable constant and only fitting sigma_max
-  - L2-normalising m_{g,i} after each update to keep it on the unit sphere
-  Note: the `sigma_max < sigma_min` ordering issue from job 23807580 is now fixed.
+- **Sigma collapse — fix deployed, not yet validated** (job 23851534): sigma_min≈1e-5,
+  sigma_max≈3e-5. Fix: changed priors to LogNormal (see Completed above). A new cluster
+  run is needed to confirm the fix holds on real data.
 
 ## Decisions
 
