@@ -3,7 +3,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=0:30:00
+#SBATCH --time=0:45:00
 #SBATCH --output=logs/refbank_%j.out
 #SBATCH --error=logs/refbank_%j.err
 
@@ -13,11 +13,12 @@
 #   apptainer build --sandbox $GROUP_HOME/containers/refbank-gpu/ docker://vboyce/refbank-gpu:latest
 #
 # Expected wall time (lax.scan + GPU):
-#   listener fit (5000 steps):       ~30s
-#   convention fit × 2 (8000 steps): ~2min
-#   total:                           ~3-4 min
+#   listener fit (5000 steps):         ~30s
+#   convention fit × 2 (8000 steps):   ~2min
+#   eval: 20 splits × listener fit:    ~10min
+#   total:                             ~15 min
 #
-# Outputs are written to results/run_<SLURM_JOB_ID>/.
+# Outputs are written to results/run_<SLURM_JOB_ID>/ and results/eval_listener_cv.csv.
 
 set -euo pipefail
 
@@ -46,5 +47,17 @@ apptainer exec --nv \
         --no-fetch \
         --output-dir $OUTPUT_DIR"
 
-echo "Done: $(date)"
+echo "Pipeline done: $(date)"
 echo "Results in: $OUTPUT_DIR"
+
+echo "Running listener cross-validation (20 splits × 5000 steps)..."
+apptainer exec --nv \
+    --bind "$(pwd):/project" \
+    "$CONTAINER" \
+    bash -c "cd /project && PYTHONPATH=/project python script/run_eval.py \
+        --n-splits 20 \
+        --n-steps 5000 \
+        --seed 0"
+
+echo "Eval done: $(date)"
+echo "CV results in: results/eval_listener_cv.csv"

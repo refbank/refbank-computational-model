@@ -1,14 +1,18 @@
 # Scratchpad
 
-## Current position: learnable image embeddings implemented; needs new cluster run
+## Current position: learnable embeddings run (24092953) analyzed; setting up held-out eval
 
-98 unit tests pass. Learnable image embeddings implemented (option c): `TrialBatch` now
-carries `option_image_ids` (N, 12) and `all_image_embs` (n_all_images, D); listener model
-uses `numpyro.param("image_emb_loc", ...)` initialized from CLIP and jointly optimized with
-beta; `ListenerFit` stores `image_emb_loc`; `save/load` handles it. Old results (run_24087645)
-are stale — need a new cluster run to see whether learnable embeddings improve listener fit.
+98 unit tests pass. Learnable image embeddings (run_24092953) dramatically improved listener
+model: L_0 argmax accuracy 89.8% (up from 12%), target rank 1.23/12 (up from 5.34/12), s_t
+mean 0.896 (up from 0.097). Convention model qualitatively unchanged: step sizes 0.148→0.043,
+displacement 0.488/0.295. Sigma_min/max still collapsed (~0.000254). **Overfitting concern**:
+12 × 512 = 6,144 free image embedding parameters for only 12 images; model may have memorized
+utterance→image mappings. Beta exploded to ~2000 (vs 37 old); image embedding norms scaled to
+~10 (vs 1 CLIP init); degenerate but valid since we normalize before computing cosine sims.
+Held-out log-likelihood (80/20 game splits) needed to determine whether learned embeddings
+generalize.
 
-Convention formation detected in run_24087645 (stale, no learnable embs):
+Convention formation detected in run_24087645 (fixed-embedding baseline):
 step sizes 0.16→0.04 across reps, residuals 0.44→0.29, error displacement 0.49 vs success
 0.30. Listener model is weak (CLIP poor signal for abstract tangrams; target rank 5.3/12;
 12% L_0 accuracy vs 90% empirical). Sigma_min/sigma_max unidentifiable (see Decisions);
@@ -82,11 +86,13 @@ from the module. Don't `pip install -e .` on the cluster.
 ## Open questions / next steps
 
 ### Immediate
-- [ ] Update the integration test fixtures (5-game parquet + npz) with the corrected image
-  embeddings: `.venv/bin/python script/run_pipeline.py --config quick_cpu`
-- [ ] **New cluster run** with learnable image embeddings to see whether they improve
-  listener fit quality (target rank, L_0 accuracy vs empirical). Submit via `sbatch script/cluster_job.sh`.
-- [ ] Generate combined.html for new run once available.
+- [ ] Update the integration test fixtures (5-game parquet + npz):
+  `.venv/bin/python script/run_pipeline.py --config quick_cpu`
+- [ ] **Held-out log-likelihood eval** (game-level CV): `script/run_eval.py` is implemented.
+  Run at full steps on cluster to see whether learnable embeddings generalize:
+  `sbatch script/cluster_eval.sh` (or `.venv/bin/python script/run_eval.py --n-folds 5 --n-steps 5000`).
+  Baseline (uniform): -2.485 nats. At 20 steps: -2.361 nats (marginal). Full-step result unknown.
+- [ ] Generate combined.html for run_24092953 once eval direction is clear.
 
 ### Visualisation — remaining improvements
 - [ ] Separate image / rep_num / game dropdowns (currently one combined dropdown).
@@ -206,6 +212,9 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   that each game has the same 12 images — effectively partial pooling is already doing this.
 
 ## Completed
+- [x] Held-out eval infrastructure (2026-05-06): `code/eval/cross_val.py` with
+  `game_level_splits`, `listener_log_likelihood`, `cross_val_listener`; `script/run_eval.py`;
+  8 unit tests. Smoke test passes (20 steps, 5 folds). Cluster run needed for full results.
 - [x] Learnable image embeddings (option c) implemented (2026-05-06): `TrialBatch` gains
   `option_image_ids` and `all_image_embs`; listener model registers `numpyro.param("image_emb_loc")`
   initialized from CLIP and optimized jointly with beta; `ListenerFit.image_emb_loc` stored and
@@ -265,11 +274,14 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   log-likelihood, but can't match human performance. Root cause: CLIP trained on natural
   images/captions; abstract tangrams with idiosyncratic game language are out of distribution.
   Mitigation: M1 learned projection (see roadmap).
-- **Sigma_min/sigma_max unidentifiable**: sigma_min and sigma_max individually are near-zero
-  (0.0002 / 0.00021), but sigma_t (the effective emission variance used in the model) ranges
-  0.014–0.028, which is near the empirically optimal 0.015. The decomposition is unidentifiable
-  when s_t is low on average — only sigma_t = sigma_min + sigma_delta*(1-s)/s matters.
-  Not a bug; would resolve if s_t were higher (stronger listener model) or sigma were fixed.
+- **Sigma_min/sigma_max still unidentifiable** even with learnable embeddings (run_24092953):
+  sigma_min ≈ sigma_max ≈ 0.000254. With s_t mean 0.896, (1−s)/s ≈ 0.11 for most trials —
+  little variance in this ratio to identify the decomposition. Sigma_game ≈ 0.0166 (stable).
+  Not a bug; resolves only with fixed sigma or explicit variance in s_t.
+- **Learnable image embedding overfitting concern**: 12 × 512 = 6,144 free parameters for 12
+  images, ~6,000 trials. Accuracy 90% matches empirical exactly — may be memorization rather
+  than generalization. Beta exploded to ~2,000 (vs 37 with fixed CLIP); image embedding norms
+  ~10 (vs 1 CLIP init). Held-out eval will determine whether this generalizes.
 
 ## Decisions
 
