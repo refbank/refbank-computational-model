@@ -1,9 +1,11 @@
 # Scratchpad
 
-## Current position: sigma collapse fix pending cluster validation; viz improved
+## Current position: sigma collapse fix pending cluster validation; viz complete
 
-All 68 unit tests pass. Sigma collapse fix deployed (LogNormal priors); needs a cluster
-run to verify. Visualisation improved with arrows, halo, white background, better legend.
+All 33 viz unit tests pass (68 unit tests total). Sigma collapse fix deployed (LogNormal
+priors); needs a cluster run to verify. Visualisation complete: overview + per-game t-SNE
+tabs in a single `combined.html`, with dropdown-based game selector, arrows, halo, white
+background, better legend, and fixed dropdown/title overlap.
 
 Full dataset: 5971 trial-listener rows, 83 games, 12 images, 83 listeners. Listener fit
 takes ~6.6s, convention fit ~14.6s on GPU.
@@ -73,17 +75,19 @@ from the module. Don't `pip install -e .` on the cluster.
 ## Open questions / next steps
 
 ### Immediate
-- [ ] Run cluster job to verify sigma collapse fix (LogNormal priors). Check that sigma_min
-  and sigma_max are in a plausible range (not 1e-5).
+- [ ] **Cluster re-run required**: image embedding bug is fixed, cache regenerated — need a
+  new cluster run with correct embeddings. Check s_t varies (not stuck at 1/12), and sigma_min
+  / sigma_max in a plausible range.
+- [ ] Update the integration test fixtures (5-game parquet + npz) with the corrected image
+  embeddings before the cluster run, so the fixture tests reflect the fix.
+  Run: `.venv/bin/python script/run_pipeline.py --config quick_cpu` (no-fetch not needed;
+  it will re-encode from local files because the cache is now written).
 
-### Visualisation — overview.html improvements
+### Visualisation — remaining improvements
 - [ ] Separate image / rep_num / game dropdowns (currently one combined dropdown).
   When filtering by image, only that image's prototype (◆) should be shown; all others hidden.
-- [ ] Per-game t-SNE tab: a second view where t-SNE is computed separately per game
-  (so each game's utterances fill the space rather than being scattered in a global embedding).
-  Tabs could be faked with Plotly button groups toggling div visibility in HTML.
-- [ ] Refresh overview.html: `.venv/bin/python script/visualize.py --results results/run_<JOBID>`
-  Delete `tsne_coords.parquet` first to force t-SNE recomputation.
+- [ ] Regenerate combined.html for latest cluster run results once sigma collapse fix is
+  validated: `.venv/bin/python script/visualize.py --results results/run_<JOBID> --combined`
 
 ### Dashboard / results presentation
 - [ ] Build a results dashboard — either GitHub Pages (static HTML) or locally hosted.
@@ -197,6 +201,12 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   that each game has the same 12 images — effectively partial pooling is already doing this.
 
 ## Completed
+- [x] Per-game t-SNE + combined HTML (2026-05-06): `compute_per_game_tsne_coords` (separate
+  t-SNE per game, cached to `tsne_per_game_coords.parquet`), `plot_per_game_overview`
+  (dropdown-based game selector — avoids O(n²) Plotly subplot overhead that caused 16-min hang
+  on 83 games), `combined_html` (two Plotly figures in single offline-ready HTML with CSS/JS tabs).
+  Added `--per-game` and `--combined` flags to `script/visualize.py`. 33 viz tests pass.
+  Fixed dropdown/title overlap (y=1.12, margin t=120). Data: all 83 games have exactly 6 reps.
 - [x] Fix sigma collapse (code side): changed sigma_min and sigma_delta priors from
   HalfNormal(1.0) to LogNormal(log(0.3), 0.5) / LogNormal(log(0.7), 0.5) in both
   speaker and listener convention models. Regression test added. 68 unit tests pass.
@@ -234,9 +244,16 @@ stable numbers. The eval harness is the measuring stick for all model changes be
 
 ## Known issues / bugs
 
-- **Sigma collapse — fix deployed, not yet validated** (job 23851534): sigma_min≈1e-5,
-  sigma_max≈3e-5. Fix: changed priors to LogNormal (see Completed above). A new cluster
-  run is needed to confirm the fix holds on real data.
+- **Image embeddings were all identical** (discovered 2026-05-06): `_open_image` in
+  `clip_encoder.py` called `.convert("RGB")` on RGBA PNGs/SVGs without compositing onto
+  white. SVGs are black ink on transparent background; transparent → black on RGB conversion
+  → solid black 224×224 for every image → CLIP returns identical embeddings for all 12 images.
+  Fix: composite RGBA images onto white background before returning. 2 regression tests added.
+  Image embedding cache regenerated. **Cluster re-run required.**
+- **Sigma collapse — likely caused by identical image embeddings**: s_t = 1/12 (chance) for
+  all trials because L_0 listener with identical option images gives uniform probability.
+  The sigma collapse is a symptom, not the root cause. Once image embeddings are fixed and
+  the listener model can discriminate, s_t will vary and sigma will be identifiable.
 
 ## Decisions
 
@@ -250,3 +267,6 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   at 1000 convention steps. `lax.scan` is the fix — see plan/compute_plan.md.
 - Fixture saving in `run_pipeline.py` only triggers when `n_games == 5` (the default for
   quick_cpu and gpu_test). Full-data runs don't overwrite the 5-game fixtures.
+- `plot_per_game_overview` uses a Plotly dropdown (one game visible at a time) rather than
+  a subplot grid. Subplot grid approach hung for 16 min on 83 games due to O(n²) validation
+  overhead in `add_trace()`/`add_annotation()` with subplot context. Dropdown is instant.

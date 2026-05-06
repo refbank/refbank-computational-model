@@ -10,6 +10,7 @@ from code.analysis.visualization import (
     plot_overview,
     plot_per_game_overview,
     plot_game,
+    combined_html,
 )
 
 
@@ -343,13 +344,13 @@ def test_plot_per_game_overview_returns_figure():
     assert isinstance(fig, go.Figure)
 
 
-def test_plot_per_game_overview_has_one_subplot_per_game():
+def test_plot_per_game_overview_has_game_dropdown():
     n_games = 3
     batch, fit = _make_batch_and_fit(n_games=n_games)
     df = compute_per_game_tsne_coords(fit, batch, perplexity=3, seed=0)
     fig = plot_per_game_overview(df)
-    n_xaxes = sum(1 for k in fig.to_dict()["layout"] if k.startswith("xaxis"))
-    assert n_xaxes >= n_games
+    assert len(fig.layout.updatemenus) >= 1
+    assert len(fig.layout.updatemenus[0].buttons) == n_games
 
 
 def test_plot_per_game_overview_has_arrows():
@@ -364,3 +365,57 @@ def test_plot_per_game_overview_white_background():
     df = compute_per_game_tsne_coords(fit, batch, perplexity=3, seed=0)
     fig = plot_per_game_overview(df)
     assert fig.layout.plot_bgcolor == "white"
+
+
+def test_plot_per_game_overview_many_games_no_spacing_error():
+    """Regression: n_rows > 13 caused vertical_spacing > 1/(rows-1) ValueError."""
+    batch, fit = _make_batch_and_fit(n_games=60, n_images=2, n_reps=2, D=4)
+    df = compute_per_game_tsne_coords(fit, batch, perplexity=2, seed=0)
+    fig = plot_per_game_overview(df)
+    assert isinstance(fig, go.Figure)
+
+
+# ---------------------------------------------------------------------------
+# combined_html
+# ---------------------------------------------------------------------------
+
+def _make_both_figs():
+    batch, fit = _make_batch_and_fit(n_games=3, n_images=4, n_reps=3)
+    df_global = compute_tsne_coords(fit, batch, perplexity=5, seed=0)
+    df_per_game = compute_per_game_tsne_coords(fit, batch, perplexity=3, seed=0)
+    return plot_overview(df_global), plot_per_game_overview(df_per_game)
+
+
+def test_combined_html_returns_string():
+    fig1, fig2 = _make_both_figs()
+    html = combined_html(fig1, fig2)
+    assert isinstance(html, str)
+
+
+def test_combined_html_is_complete_document():
+    fig1, fig2 = _make_both_figs()
+    html = combined_html(fig1, fig2)
+    assert "<html" in html
+    assert "</html>" in html
+
+
+def test_combined_html_has_two_tabs():
+    fig1, fig2 = _make_both_figs()
+    html = combined_html(fig1, fig2)
+    assert "Overview" in html
+    assert "Per-game" in html
+
+
+def test_combined_html_embeds_both_figures():
+    fig1, fig2 = _make_both_figs()
+    html = combined_html(fig1, fig2)
+    # Each Plotly figure serializes its title into the HTML
+    assert "Convention trajectories" in html
+    assert "Per-game convention trajectories" in html
+
+
+def test_combined_html_is_self_contained():
+    """Plotly JS must be embedded inline, not loaded via a <script src=...> CDN tag."""
+    fig1, fig2 = _make_both_figs()
+    html = combined_html(fig1, fig2)
+    assert 'src="https://cdn.plot.ly' not in html

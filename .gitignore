@@ -220,3 +220,7 @@ __marimo__/
 # JAX XLA compilation cache
 .xla_cache/
 .model_cache/
+
+# Results: keep .npz and .csv (transferred from cluster via git); ignore generated artifacts
+results/**/*.html
+results/**/tsne_coords.parquet

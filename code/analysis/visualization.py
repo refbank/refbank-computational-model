@@ -1,14 +1,15 @@
-import math
+import logging
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from sklearn.manifold import TSNE
 
 from code.models.conventional_speaker import ConventionFit
 from code.prep_data.pipeline import TrialBatch
+
+_log = logging.getLogger(__name__)
 
 # 12-color qualitative palette, one per image slot
 _IMAGE_COLORS = [
@@ -301,11 +302,11 @@ def plot_overview(tsne_df: pd.DataFrame) -> go.Figure:
         updatemenus=[
             dict(
                 buttons=image_buttons, direction="down", showactive=True,
-                x=0.0, xanchor="left", y=1.02, yanchor="bottom",
+                x=0.0, xanchor="left", y=1.12, yanchor="bottom",
             ),
             dict(
                 buttons=game_buttons, direction="down", showactive=True,
-                x=0.18, xanchor="left", y=1.02, yanchor="bottom",
+                x=0.18, xanchor="left", y=1.12, yanchor="bottom",
             ),
         ],
         title="Convention trajectories (t-SNE)",
@@ -315,7 +316,217 @@ def plot_overview(tsne_df: pd.DataFrame) -> go.Figure:
         paper_bgcolor="white",
         width=1200,
         height=900,
-        margin=dict(t=80, b=20, l=20, r=20),
+        margin=dict(t=120, b=20, l=20, r=20),
+    )
+    return fig
+
+
+def compute_per_game_tsne_coords(
+    fit: ConventionFit,
+    batch: TrialBatch,
+    role: Literal["speaker", "listener"] = "speaker",
+    perplexity: int = 30,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """
+    Like compute_tsne_coords, but runs a separate t-SNE per game so each game's
+    utterances fill the 2D space independently.
+
+    Each game's t-SNE includes: that game's utterances, that game's convention
+    points m_{g,i}, and all global prototypes mu_i.
+
+    Returns a DataFrame with the same columns as compute_tsne_coords.
+    Coordinates are not comparable across games (each game has its own 2D space).
+    """
+    utt_emb = np.array(batch.utterance_emb)
+    game_ids = np.array(batch.game_ids)
+    image_ids = np.array(batch.image_ids)
+    rep_nums = np.array(batch.rep_num)
+    correct = np.array(batch.selected_idx) == np.array(batch.target_idx)
+
+    m_loc = fit.speaker_m_loc if role == "speaker" else fit.listener_m_loc
+    proto_vecs = fit.mu_i
+    n_images = proto_vecs.shape[0]
+
+    rng = np.random.default_rng(seed)
+    all_rows: list[pd.DataFrame] = []
+
+    for g in range(batch.n_games):
+        if g % 10 == 0:
+            _log.info("  per-game t-SNE: %d / %d games", g, batch.n_games)
+        mask = game_ids == g
+        seen: set = set()
+        utt_indices: list[int] = []
+        utt_meta: list[dict] = []
+        for n in np.where(mask)[0]:
+            key = (int(image_ids[n]), int(rep_nums[n]))
+            if key not in seen:
+                seen.add(key)
+                utt_indices.append(n)
+                utt_meta.append({
+                    "kind": "utterance",
+                    "game_id": g,
+                    "image_id": int(image_ids[n]),
+                    "rep_num": int(rep_nums[n]),
+                    "correct": bool(correct[n]),
+                })
+
+        conv_meta = [
+            {"kind": "convention", "game_id": g, "image_id": i, "rep_num": 0, "correct": False}
+            for i in range(n_images)
+        ]
+        proto_meta = [
+            {"kind": "prototype", "game_id": g, "image_id": i, "rep_num": 0, "correct": False}
+            for i in range(n_images)
+        ]
+
+        utt_vecs = utt_emb[utt_indices]
+        conv_vecs = m_loc[g]
+        all_vecs = np.vstack([utt_vecs, conv_vecs, proto_vecs]).astype(np.float64)
+
+        n_pts = len(all_vecs)
+        p = min(perplexity, max(2, (n_pts - 1) // 3))
+        game_seed = int(rng.integers(0, 2**31))
+        coords_2d = TSNE(
+            n_components=2, perplexity=p, random_state=game_seed, n_jobs=1
+        ).fit_transform(all_vecs)
+
+        meta = utt_meta + conv_meta + proto_meta
+        df_g = pd.DataFrame(meta)
+        df_g["x"] = coords_2d[:, 0].astype(np.float32)
+        df_g["y"] = coords_2d[:, 1].astype(np.float32)
+        all_rows.append(df_g)
+
+    _log.info("  per-game t-SNE: done (%d games)", batch.n_games)
+    return pd.concat(all_rows, ignore_index=True)
+
+
+def plot_per_game_overview(tsne_df: pd.DataFrame) -> go.Figure:
+    """
+    Interactive per-game t-SNE view with a game dropdown.
+
+    Each game's t-SNE was computed independently so its utterances fill the
+    full 2D space. A dropdown selects which game to display; one game is shown
+    at a time so the coordinates are always meaningful.
+    Use compute_per_game_tsne_coords as input.
+    """
+    n_games = int(tsne_df[tsne_df["kind"] == "utterance"]["game_id"].max()) + 1
+    n_images = int(tsne_df["image_id"].max()) + 1
+
+    # Legend dummies — always visible, one per symbol type
+    traces: list[go.BaseTraceType] = [
+        go.Scatter(x=[None], y=[None], mode="markers",
+            marker=dict(symbol="diamond", size=12, color="grey", line=dict(width=2, color="black")),
+            name="prototype μᵢ (◆)", showlegend=True),
+        go.Scatter(x=[None], y=[None], mode="markers",
+            marker=dict(symbol="star", size=12, color="grey", line=dict(width=1, color="black")),
+            name="convention m(g,i) (★)", showlegend=True),
+        go.Scatter(x=[None], y=[None], mode="markers",
+            marker=dict(symbol="circle", size=9, color="grey"),
+            name="correct (○)", showlegend=True),
+        go.Scatter(x=[None], y=[None], mode="markers",
+            marker=dict(symbol="x", size=9, color="grey"),
+            name="incorrect (✗)", showlegend=True),
+    ]
+    N_LEGEND = len(traces)
+    # Per-game block: n_images utterance traces + n_images convention traces + 1 prototype trace
+    TRACES_PER_GAME = n_images + n_images + 1
+
+    game_annotations: dict[int, list[dict]] = {}
+
+    for g in range(n_games):
+        gdf = tsne_df[tsne_df["game_id"] == g]
+        utts = gdf[gdf["kind"] == "utterance"]
+        convs = gdf[gdf["kind"] == "convention"]
+        protos = gdf[gdf["kind"] == "prototype"]
+        visible = g == 0
+
+        for i in range(n_images):
+            color = _IMAGE_COLORS[i % len(_IMAGE_COLORS)]
+            img_utts = utts[utts["image_id"] == i].sort_values("rep_num")
+            rep_nums = img_utts["rep_num"].tolist()
+            traces.append(go.Scatter(
+                x=img_utts["x"].tolist(),
+                y=img_utts["y"].tolist(),
+                mode="markers",
+                marker=dict(
+                    color=color, size=6, opacity=0.9,
+                    symbol=img_utts["correct"].map(lambda c: "circle" if c else "x").tolist(),
+                    line=dict(width=[3 if r == 1 else 0 for r in rep_nums], color="rgba(0,0,0,0.8)"),
+                ),
+                hovertemplate=f"img={i} rep=%{{customdata[0]}} correct=%{{customdata[1]}}<extra></extra>",
+                customdata=img_utts[["rep_num", "correct"]].values,
+                name=f"image {i}",
+                showlegend=(g == 0),
+                legendgroup=f"image {i}",
+                visible=visible,
+            ))
+
+        for i in range(n_images):
+            gc = convs[convs["image_id"] == i]
+            color = _IMAGE_COLORS[i % len(_IMAGE_COLORS)]
+            traces.append(go.Scatter(
+                x=gc["x"].tolist(),
+                y=gc["y"].tolist(),
+                mode="markers",
+                marker=dict(symbol="star", size=12, color=color, line=dict(width=1, color="black")),
+                name=f"conv {i}",
+                showlegend=False,
+                legendgroup=f"image {i}",
+                visible=visible,
+            ))
+
+        proto_colors = [_IMAGE_COLORS[int(i) % len(_IMAGE_COLORS)] for i in protos["image_id"]]
+        traces.append(go.Scatter(
+            x=protos["x"].tolist(),
+            y=protos["y"].tolist(),
+            mode="markers",
+            marker=dict(symbol="diamond", size=12, color=proto_colors, line=dict(width=1.5, color="black")),
+            name="prototypes",
+            showlegend=False,
+            visible=visible,
+        ))
+
+        game_annotations[g] = _arrow_annotations(utts)
+
+    n_traces = len(traces)
+
+    def _vis(show_game: int) -> list[bool]:
+        v = [False] * n_traces
+        for j in range(N_LEGEND):
+            v[j] = True
+        start = N_LEGEND + show_game * TRACES_PER_GAME
+        for j in range(TRACES_PER_GAME):
+            v[start + j] = True
+        return v
+
+    game_buttons = [
+        dict(
+            label=f"game {g}", method="update",
+            args=[
+                {"visible": _vis(g)},
+                {"annotations": game_annotations[g],
+                 "title": f"Per-game convention trajectories (t-SNE): game {g}"},
+            ],
+        )
+        for g in range(n_games)
+    ]
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        updatemenus=[dict(
+            buttons=game_buttons, direction="down", showactive=True,
+            x=0.0, xanchor="left", y=1.12, yanchor="bottom",
+        )],
+        title="Per-game convention trajectories (t-SNE): game 0",
+        annotations=game_annotations[0],
+        xaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        width=1100,
+        height=850,
+        margin=dict(t=120, b=20, l=20, r=20),
     )
     return fig
 
@@ -449,3 +660,55 @@ def plot_game(tsne_df: pd.DataFrame, game_id: int) -> go.Figure:
         legend=dict(title="image"),
     )
     return fig
+
+
+_TAB_CSS = """
+body { font-family: sans-serif; margin: 0; padding: 0; }
+.tab-bar { display: flex; border-bottom: 2px solid #ccc; padding: 0 12px; background: #f8f8f8; }
+.tab-btn {
+    padding: 10px 20px; cursor: pointer; border: 1px solid transparent;
+    border-bottom: none; margin-bottom: -2px; background: transparent;
+    font-size: 14px; color: #555;
+}
+.tab-btn.active { background: white; border-color: #ccc; color: #000; border-radius: 4px 4px 0 0; }
+.tab-pane { display: none; padding: 8px; }
+.tab-pane.active { display: block; }
+"""
+
+_TAB_JS = """
+function showTab(btn, name) {
+    document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById(name).classList.add('active');
+    btn.classList.add('active');
+}
+"""
+
+
+def combined_html(overview_fig: go.Figure, per_game_fig: go.Figure) -> str:
+    """
+    Combine the global overview and per-game overview figures into a single
+    self-contained HTML file with two tabs.
+
+    Plotly JS is embedded (no CDN dependency), so the file works offline.
+    """
+    overview_div = overview_fig.to_html(full_html=False, include_plotlyjs="inline")
+    per_game_div = per_game_fig.to_html(full_html=False, include_plotlyjs=False)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Convention trajectories</title>
+  <style>{_TAB_CSS}</style>
+</head>
+<body>
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="showTab(this, 'tab-overview')">Overview</button>
+    <button class="tab-btn" onclick="showTab(this, 'tab-per-game')">Per-game</button>
+  </div>
+  <div id="tab-overview" class="tab-pane active">{overview_div}</div>
+  <div id="tab-per-game" class="tab-pane">{per_game_div}</div>
+  <script>{_TAB_JS}</script>
+</body>
+</html>"""

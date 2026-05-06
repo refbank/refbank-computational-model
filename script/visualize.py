@@ -27,7 +27,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from code.prep_data.pipeline import build_trial_batch_from_df
 from code.embeddings.cache import EmbeddingCache
 from code.models.conventional_speaker import load_convention_fit
-from code.analysis.visualization import compute_tsne_coords, plot_overview, plot_game
+from code.analysis.visualization import (
+    compute_tsne_coords,
+    compute_per_game_tsne_coords,
+    plot_overview,
+    plot_per_game_overview,
+    plot_game,
+    combined_html,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -85,6 +92,18 @@ def get_coords(fit, batch, results_dir: str, role: str, perplexity: int, seed: i
     return coords
 
 
+def get_per_game_coords(fit, batch, results_dir: str, role: str, perplexity: int, seed: int):
+    cache_path = os.path.join(results_dir, "tsne_per_game_coords.parquet")
+    if os.path.exists(cache_path):
+        log.info("Loading cached per-game t-SNE coords from %s", cache_path)
+        return pd.read_parquet(cache_path)
+    log.info("Computing per-game t-SNE...")
+    coords = compute_per_game_tsne_coords(fit, batch, role=role, perplexity=perplexity, seed=seed)
+    coords.to_parquet(cache_path, index=False)
+    log.info("Cached to %s", cache_path)
+    return coords
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualise convention trajectories")
     parser.add_argument("--results", required=True, help="Path to results directory (e.g. results/run_23851534)")
@@ -94,6 +113,8 @@ def main():
     parser.add_argument("--perplexity", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-games", type=int, default=0, help="Limit to first N games (0 = all)")
+    parser.add_argument("--per-game", action="store_true", help="Generate per-game t-SNE grid (per_game_overview.html)")
+    parser.add_argument("--combined", action="store_true", help="Generate single combined HTML with Overview and Per-game tabs (combined.html)")
     args = parser.parse_args()
 
     if not os.path.isdir(args.results):
@@ -108,7 +129,27 @@ def main():
     batch = load_batch(n_games=args.n_games)
     coords = get_coords(fit, batch, args.results, args.role, args.perplexity, args.seed)
 
-    if args.game is None and not args.all_games:
+    if args.combined:
+        per_game_coords = get_per_game_coords(fit, batch, args.results, args.role, args.perplexity, args.seed)
+        log.info("Building overview figure...")
+        ov_fig = plot_overview(coords)
+        log.info("Building per-game figure...")
+        pg_fig = plot_per_game_overview(per_game_coords)
+        log.info("Serializing combined HTML...")
+        html = combined_html(ov_fig, pg_fig)
+        out = os.path.join(args.results, "combined.html")
+        log.info("Writing %.1f MB...", len(html) / 1e6)
+        with open(out, "w") as f:
+            f.write(html)
+        log.info("Saved combined → %s", out)
+
+    if args.per_game:
+        per_game_coords = get_per_game_coords(fit, batch, args.results, args.role, args.perplexity, args.seed)
+        out = os.path.join(args.results, "per_game_overview.html")
+        plot_per_game_overview(per_game_coords).write_html(out)
+        log.info("Saved per-game overview → %s", out)
+
+    if args.game is None and not args.all_games and not args.per_game and not args.combined:
         # Default: overview only
         out = os.path.join(args.results, "overview.html")
         plot_overview(coords).write_html(out)

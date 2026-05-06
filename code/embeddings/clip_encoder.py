@@ -16,11 +16,22 @@ os.environ.setdefault("HF_HOME", os.path.abspath(_DEFAULT_CACHE))
 
 
 def _open_image(path: str) -> Image.Image:
-    """Open an image file as a PIL RGB image, rasterizing SVGs via cairosvg."""
+    """Open an image file as a PIL RGB image, rasterizing SVGs via cairosvg.
+
+    RGBA images (including SVGs with transparent backgrounds) are composited
+    onto a white background so transparent pixels become white, not black.
+    """
     if path.lower().endswith(".svg"):
         png_bytes = cairosvg.svg2png(url=path)
-        return Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    return Image.open(path).convert("RGB")
+        img = Image.open(io.BytesIO(png_bytes))
+    else:
+        img = Image.open(path)
+
+    if img.mode in ("RGBA", "LA"):
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        return bg
+    return img.convert("RGB")
 
 
 class CLIPEncoder:
