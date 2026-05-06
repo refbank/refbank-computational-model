@@ -1,11 +1,18 @@
 # Scratchpad
 
-## Current position: sigma collapse fix pending cluster validation; viz complete
+## Current position: learnable image embeddings implemented; needs new cluster run
 
-All 33 viz unit tests pass (68 unit tests total). Sigma collapse fix deployed (LogNormal
-priors); needs a cluster run to verify. Visualisation complete: overview + per-game t-SNE
-tabs in a single `combined.html`, with dropdown-based game selector, arrows, halo, white
-background, better legend, and fixed dropdown/title overlap.
+98 unit tests pass. Learnable image embeddings implemented (option c): `TrialBatch` now
+carries `option_image_ids` (N, 12) and `all_image_embs` (n_all_images, D); listener model
+uses `numpyro.param("image_emb_loc", ...)` initialized from CLIP and jointly optimized with
+beta; `ListenerFit` stores `image_emb_loc`; `save/load` handles it. Old results (run_24087645)
+are stale — need a new cluster run to see whether learnable embeddings improve listener fit.
+
+Convention formation detected in run_24087645 (stale, no learnable embs):
+step sizes 0.16→0.04 across reps, residuals 0.44→0.29, error displacement 0.49 vs success
+0.30. Listener model is weak (CLIP poor signal for abstract tangrams; target rank 5.3/12;
+12% L_0 accuracy vs 90% empirical). Sigma_min/sigma_max unidentifiable (see Decisions);
+sigma_t itself is in a reasonable range (0.014–0.028).
 
 Full dataset: 5971 trial-listener rows, 83 games, 12 images, 83 listeners. Listener fit
 takes ~6.6s, convention fit ~14.6s on GPU.
@@ -75,13 +82,11 @@ from the module. Don't `pip install -e .` on the cluster.
 ## Open questions / next steps
 
 ### Immediate
-- [ ] **Cluster re-run required**: image embedding bug is fixed, cache regenerated — need a
-  new cluster run with correct embeddings. Check s_t varies (not stuck at 1/12), and sigma_min
-  / sigma_max in a plausible range.
 - [ ] Update the integration test fixtures (5-game parquet + npz) with the corrected image
-  embeddings before the cluster run, so the fixture tests reflect the fix.
-  Run: `.venv/bin/python script/run_pipeline.py --config quick_cpu` (no-fetch not needed;
-  it will re-encode from local files because the cache is now written).
+  embeddings: `.venv/bin/python script/run_pipeline.py --config quick_cpu`
+- [ ] **New cluster run** with learnable image embeddings to see whether they improve
+  listener fit quality (target rank, L_0 accuracy vs empirical). Submit via `sbatch script/cluster_job.sh`.
+- [ ] Generate combined.html for new run once available.
 
 ### Visualisation — remaining improvements
 - [ ] Separate image / rep_num / game dropdowns (currently one combined dropdown).
@@ -201,16 +206,26 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   that each game has the same 12 images — effectively partial pooling is already doing this.
 
 ## Completed
+- [x] Learnable image embeddings (option c) implemented (2026-05-06): `TrialBatch` gains
+  `option_image_ids` and `all_image_embs`; listener model registers `numpyro.param("image_emb_loc")`
+  initialized from CLIP and optimized jointly with beta; `ListenerFit.image_emb_loc` stored and
+  round-tripped; `compute_success_probs` uses fit's learned embeddings when available. 98 unit
+  tests pass. Integration test updated: absolute beta recovery removed (unidentified with learnable
+  embs); ordering check retained.
+- [x] Image embedding bug fixed + validated (2026-05-06, job 24087645): `_open_image` now
+  composites RGBA images onto white before returning; 2 regression tests. Cache regenerated.
+  Run 24087645 confirmed: s_t varies (mean 0.097, range 0.01–0.48); convention residuals
+  decrease 0.44→0.29 across reps; step sizes 0.16→0.04; displacement 0.49 (error) vs 0.30
+  (success). 85 unit tests pass.
 - [x] Per-game t-SNE + combined HTML (2026-05-06): `compute_per_game_tsne_coords` (separate
   t-SNE per game, cached to `tsne_per_game_coords.parquet`), `plot_per_game_overview`
   (dropdown-based game selector — avoids O(n²) Plotly subplot overhead that caused 16-min hang
   on 83 games), `combined_html` (two Plotly figures in single offline-ready HTML with CSS/JS tabs).
   Added `--per-game` and `--combined` flags to `script/visualize.py`. 33 viz tests pass.
   Fixed dropdown/title overlap (y=1.12, margin t=120). Data: all 83 games have exactly 6 reps.
-- [x] Fix sigma collapse (code side): changed sigma_min and sigma_delta priors from
-  HalfNormal(1.0) to LogNormal(log(0.3), 0.5) / LogNormal(log(0.7), 0.5) in both
-  speaker and listener convention models. Regression test added. 68 unit tests pass.
-  **Still needs cluster run to confirm empirically.**
+- [x] LogNormal sigma priors (code side): changed sigma_min and sigma_delta priors from
+  HalfNormal(1.0) to LogNormal. Not the real fix — sigma_min remains tiny because
+  sigma_t is what matters (see known issues). Prior change kept.
 - [x] Visualisation improvements (2026-05-05): bigger figures (1200×900 / 1100×850),
   white background, more legend entries (correct/incorrect/convention/prototype symbols),
   rep-to-rep arrows via Plotly annotations (game dropdown triggers annotation update),
@@ -242,18 +257,19 @@ stable numbers. The eval harness is the measuring stick for all model changes be
   (200-step fits; skipped when fixtures absent)
 - [x] `plan/compute_plan.md` — computational footprint analysis and cluster setup notes
 
-## Known issues / bugs
+## Known issues / open questions
 
-- **Image embeddings were all identical** (discovered 2026-05-06): `_open_image` in
-  `clip_encoder.py` called `.convert("RGB")` on RGBA PNGs/SVGs without compositing onto
-  white. SVGs are black ink on transparent background; transparent → black on RGB conversion
-  → solid black 224×224 for every image → CLIP returns identical embeddings for all 12 images.
-  Fix: composite RGBA images onto white background before returning. 2 regression tests added.
-  Image embedding cache regenerated. **Cluster re-run required.**
-- **Sigma collapse — likely caused by identical image embeddings**: s_t = 1/12 (chance) for
-  all trials because L_0 listener with identical option images gives uniform probability.
-  The sigma collapse is a symptom, not the root cause. Once image embeddings are fixed and
-  the listener model can discriminate, s_t will vary and sigma will be identifiable.
+- **Listener model weak for abstract tangrams**: CLIP text→image cosine similarity gives only
+  a weak signal — target image rank 5.3/12 on average (vs 6.5 random), L_0 argmax accuracy
+  12% vs 90% empirical. The model learns beta=37 (positive) which marginally improves
+  log-likelihood, but can't match human performance. Root cause: CLIP trained on natural
+  images/captions; abstract tangrams with idiosyncratic game language are out of distribution.
+  Mitigation: M1 learned projection (see roadmap).
+- **Sigma_min/sigma_max unidentifiable**: sigma_min and sigma_max individually are near-zero
+  (0.0002 / 0.00021), but sigma_t (the effective emission variance used in the model) ranges
+  0.014–0.028, which is near the empirically optimal 0.015. The decomposition is unidentifiable
+  when s_t is low on average — only sigma_t = sigma_min + sigma_delta*(1-s)/s matters.
+  Not a bug; would resolve if s_t were higher (stronger listener model) or sigma were fixed.
 
 ## Decisions
 
@@ -270,3 +286,9 @@ stable numbers. The eval harness is the measuring stick for all model changes be
 - `plot_per_game_overview` uses a Plotly dropdown (one game visible at a time) rather than
   a subplot grid. Subplot grid approach hung for 16 min on 83 games due to O(n²) validation
   overhead in `add_trace()`/`add_annotation()` with subplot context. Dropdown is instant.
+- Sigma_min/sigma_max are unidentifiable when s_t is low (s_t ≈ 0.09 average). The model
+  uses sigma_t = sigma_min + sigma_delta*(1-s)/s; only sigma_t matters, not the decomposition.
+  sigma_t ranges 0.014–0.028 in run 24087645, close to empirical optimum (0.015). Not a bug.
+- Listener model (L_0 with CLIP cosine sim) is fundamentally weak for abstract tangrams:
+  target rank 5.3/12, argmax accuracy 12% vs 90% empirical. CLIP is out-of-distribution for
+  this task. M1 (learned projection) is the planned fix.

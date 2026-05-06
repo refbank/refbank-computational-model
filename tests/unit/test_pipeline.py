@@ -185,3 +185,35 @@ def test_build_trial_batch_from_df_option_set_as_numpy_array():
     df["option_set"] = df["option_set"].apply(np.array)
     batch = build_trial_batch_from_df(df, image_embs, utt_embs)
     assert batch.utterance_emb.shape[0] == 12
+
+
+def test_build_trial_batch_from_df_has_option_image_ids():
+    """option_image_ids must have shape (N, 12) with int dtype."""
+    N, D = 20, 8
+    df, image_embs, utt_embs = _make_df(n_trials=N, D=D)
+    batch = build_trial_batch_from_df(df, image_embs, utt_embs)
+    assert hasattr(batch, "option_image_ids"), "TrialBatch missing option_image_ids field"
+    assert batch.option_image_ids.shape == (N, 12)
+    assert jnp.issubdtype(batch.option_image_ids.dtype, jnp.integer)
+
+
+def test_build_trial_batch_from_df_has_all_image_embs():
+    """all_image_embs must have shape (n_all_images, D) covering all option images."""
+    N, D = 20, 8
+    df, image_embs, utt_embs = _make_df(n_trials=N, D=D)
+    batch = build_trial_batch_from_df(df, image_embs, utt_embs)
+    assert hasattr(batch, "all_image_embs"), "TrialBatch missing all_image_embs field"
+    all_option_ids = {img for opts in df["option_set"] for img in opts}
+    assert batch.all_image_embs.shape == (len(all_option_ids), D)
+
+
+def test_build_trial_batch_from_df_option_image_ids_consistent_with_all_image_embs():
+    """all_image_embs[option_image_ids[n, j]] must equal option_embs[n, j] for all n, j."""
+    N, D = 20, 8
+    df, image_embs, utt_embs = _make_df(n_trials=N, D=D)
+    batch = build_trial_batch_from_df(df, image_embs, utt_embs)
+    reconstructed = batch.all_image_embs[batch.option_image_ids]  # (N, 12, D)
+    assert reconstructed.shape == batch.option_embs.shape
+    assert np.allclose(np.array(reconstructed), np.array(batch.option_embs), atol=1e-6), (
+        "all_image_embs[option_image_ids] must reproduce option_embs exactly"
+    )

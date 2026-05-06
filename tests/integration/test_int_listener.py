@@ -46,6 +46,9 @@ def test_listener_beta_recovery():
 
     import jax.numpy as jnp
 
+    # option_image_ids: each trial uses all n_images images in order
+    option_image_ids = np.tile(np.arange(n_images, dtype=np.int32), (N, 1))
+
     batch = build_trial_batch(
         utterance_emb=jnp.array(utterance_embs),
         option_embs=jnp.array(option_embs),
@@ -58,15 +61,16 @@ def test_listener_beta_recovery():
         n_listeners=2,
         n_games=1,
         n_images=n_images,
+        option_image_ids=jnp.array(option_image_ids),
+        all_image_embs=jnp.array(img_embs),
     )
 
     fit = fit_listener(batch, n_steps=5000, seed=0)
 
     fitted_betas = np.exp(fit.beta_loc)  # posterior means in beta space
+    # With learnable image embeddings, absolute beta values are not identified
+    # (the model can trade embedding scale for beta magnitude).  The meaningful
+    # invariant is that the more-discriminating listener has the higher beta.
     assert fitted_betas[0] < fitted_betas[1], (
         f"Expected beta order preserved: {fitted_betas[0]:.2f} < {fitted_betas[1]:.2f}"
     )
-    for i, (fitted, true) in enumerate(zip(fitted_betas, true_betas)):
-        assert abs(fitted - true) < 1.5, (
-            f"listener {i}: fitted beta {fitted:.2f}, true {true:.2f}, diff {abs(fitted-true):.2f}"
-        )

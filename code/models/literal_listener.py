@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
@@ -14,17 +15,31 @@ def literal_listener_model(batch: TrialBatch) -> None:
     NumPyro model for the literal L_0 listener.
     Plates over listeners for beta_l ~ LogNormal(mu_beta, sigma_beta)
     and over trials for the 12-way choice likelihood.
+
+    Image embeddings are learnable: initialized from batch.all_image_embs (CLIP)
+    and jointly optimized with beta via numpyro.param.
     """
+    if batch.all_image_embs is None or batch.option_image_ids is None:
+        raise ValueError(
+            "TrialBatch.all_image_embs and option_image_ids must be set"
+        )
+
+    image_emb_loc = numpyro.param("image_emb_loc", batch.all_image_embs)  # (n_img, D)
+
     mu_beta = numpyro.sample("mu_beta", dist.Normal(0, 2))
     sigma_beta = numpyro.sample("sigma_beta", dist.HalfNormal(1))
 
     with numpyro.plate("listeners", batch.n_listeners):
         log_beta = numpyro.sample("log_beta", dist.Normal(mu_beta, sigma_beta))
 
-    # cos_sims: (N, 12)
-    cos_sims = jnp.einsum("nd,nkd->nk", batch.utterance_emb, batch.option_embs)
-    beta_per_trial = jnp.exp(log_beta[batch.listener_ids])  # (N,)
-    logits = beta_per_trial[:, None] * cos_sims              # (N, 12)
+    # Look up per-trial option embeddings and normalize for cosine similarity.
+    option_embs = image_emb_loc[batch.option_image_ids]          # (N, 12, D)
+    norms = jnp.linalg.norm(option_embs, axis=-1, keepdims=True)
+    option_embs_norm = option_embs / norms
+
+    cos_sims = jnp.einsum("nd,nkd->nk", batch.utterance_emb, option_embs_norm)
+    beta_per_trial = jnp.exp(log_beta[batch.listener_ids])       # (N,)
+    logits = beta_per_trial[:, None] * cos_sims                  # (N, 12)
 
     with numpyro.plate("trials", batch.utterance_emb.shape[0]):
         numpyro.sample(
@@ -63,10 +78,11 @@ def literal_listener_guide(batch: TrialBatch) -> None:
 
 @dataclass
 class ListenerFit:
-    beta_loc:   np.ndarray  # (n_listeners,) posterior mean of log beta_l
-    beta_scale: np.ndarray  # (n_listeners,) posterior std of log beta_l
-    mu_beta:    float
-    sigma_beta: float
+    beta_loc:      np.ndarray        # (n_listeners,) posterior mean of log beta_l
+    beta_scale:    np.ndarray        # (n_listeners,) posterior std of log beta_l
+    mu_beta:       float
+    sigma_beta:    float
+    image_emb_loc: Optional[np.ndarray] = None  # (n_all_images, D) learned embeddings
 
 
 def fit_listener(
@@ -89,17 +105,20 @@ def fit_listener(
         beta_scale=np.array(result.params["log_beta_scale"]),
         mu_beta=float(result.params["mu_beta_loc"]),
         sigma_beta=float(np.exp(result.params["sigma_beta_loc"])),
+        image_emb_loc=np.array(result.params["image_emb_loc"]),
     )
 
 
 def save_listener_fit(fit: ListenerFit, path: str) -> None:
-    np.savez(
-        path,
+    data = dict(
         beta_loc=fit.beta_loc,
         beta_scale=fit.beta_scale,
         mu_beta=np.array(fit.mu_beta),
         sigma_beta=np.array(fit.sigma_beta),
     )
+    if fit.image_emb_loc is not None:
+        data["image_emb_loc"] = fit.image_emb_loc
+    np.savez(path, **data)
 
 
 def load_listener_fit(path: str) -> ListenerFit:
@@ -109,6 +128,7 @@ def load_listener_fit(path: str) -> ListenerFit:
         beta_scale=d["beta_scale"],
         mu_beta=float(d["mu_beta"]),
         sigma_beta=float(d["sigma_beta"]),
+        image_emb_loc=d["image_emb_loc"] if "image_emb_loc" in d else None,
     )
 
 
@@ -116,17 +136,25 @@ def compute_success_probs(fit: ListenerFit, batch: TrialBatch) -> np.ndarray:
     """
     Returns (N,) array: s_t = L_0(target_idx | u, O, listener).
     Uses posterior mean beta (exp of beta_loc) for each listener.
+    Uses fit.image_emb_loc (learned embeddings) when available.
     """
     beta = np.exp(fit.beta_loc)  # (n_listeners,)
-    cos_sims = np.einsum(
-        "nd,nkd->nk",
-        np.array(batch.utterance_emb),
-        np.array(batch.option_embs),
-    )  # (N, 12)
+
+    if fit.image_emb_loc is not None:
+        if batch.option_image_ids is None:
+            raise ValueError(
+                "batch.option_image_ids must be set when fit.image_emb_loc is present"
+            )
+        option_embs = fit.image_emb_loc[np.array(batch.option_image_ids)]  # (N, 12, D)
+        norms = np.linalg.norm(option_embs, axis=-1, keepdims=True)
+        option_embs = option_embs / norms
+    else:
+        option_embs = np.array(batch.option_embs)
+
+    cos_sims = np.einsum("nd,nkd->nk", np.array(batch.utterance_emb), option_embs)
     beta_per_trial = beta[np.array(batch.listener_ids)]  # (N,)
     logits = beta_per_trial[:, None] * cos_sims           # (N, 12)
 
-    # Stable softmax
     logits_shifted = logits - logits.max(axis=1, keepdims=True)
     probs = np.exp(logits_shifted)
     probs /= probs.sum(axis=1, keepdims=True)

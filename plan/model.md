@@ -499,11 +499,32 @@ alternatives — this can be summarized as rank or top-$k$ accuracy across trial
 
    > **Answer:** Treat as i.i.d. for now.
 
-8. **Whether a learned projection is needed.** The raw CLIP image and text embeddings live
-   in the same nominal space but may not be well-aligned for the reference game task —
-   a learned projector head is probably necessary (see the note on CLIP initialization in
-   OQ2). Whether this projection is learned per modality, shared, or applied only to one
-   side is an open implementation question.
+8. **How to bridge the CLIP modality gap for the listener model.** Empirically (run
+   24087645), raw CLIP text→image cosine similarity is a weak signal for abstract tangrams:
+   target image ranks 5.3/12 on average, L_0 argmax accuracy 12% vs 90% empirical. The
+   text embeddings carry the convention signal and should remain fixed; the image embeddings
+   need to be shifted into alignment. Three options:
+
+   - **(a) Full D×D map.** Learn $P \in \mathbb{R}^{D \times D}$ applied only to image
+     embeddings: $\text{sim}(u, i) = z_\text{text} \cdot (P\, z_\text{image})$. Initialize
+     $P = I$, penalize $\|P - I\|_F$. Conceptually clean but heavily overparameterized:
+     only 12 image vectors constrain 512² = 262k parameters; the matrix structure mainly
+     serves as a regularizer.
+
+   - **(b) Low-rank residual.** $P = I + AB$ where $A, B \in \mathbb{R}^{D \times r}$,
+     $r \ll D$ (e.g. $r = 16$). Explicit low-rank constraint; 2Dr ≈ 16k parameters. More
+     principled than (a) given only 12 images; equivalent in practice since the image
+     embedding matrix has rank ≤ 12.
+
+   - **(c) Free image embeddings.** Freely learn 12 new $D$-dimensional image embeddings,
+     initialized from CLIP. Equivalent to (a)/(b) in terms of what is actually constrained
+     by 12 images, but simpler to implement — just add 12 × D = 6,144 free parameters to
+     the listener model. Regularize by initializing from CLIP and using an L2 penalty on
+     deviation from initialization.
+
+   > **Answer:** Implement (c) first — initialize image embeddings from CLIP, then shift
+   > them freely within the listener model. Simplest implementation, and equivalent to (a)
+   > and (b) for 12 images. Options (a) and (b) deferred.
 
 9. **Whether the task-relevant subspace is low-rank.** Separately from the projection
    question, the full CLIP space (D ≈ 512 or 768) may contain many dimensions irrelevant

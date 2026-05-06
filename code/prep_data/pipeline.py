@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
@@ -7,31 +8,35 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class TrialBatch:
-    utterance_emb:  jnp.ndarray  # (N, D) CLIP text, L2-normalized
-    option_embs:    jnp.ndarray  # (N, 12, D) CLIP image, L2-normalized
-    target_idx:     jnp.ndarray  # (N,) int — index of target in option_embs[n]
-    selected_idx:   jnp.ndarray  # (N,) int — index of listener's pick
-    listener_ids:   jnp.ndarray  # (N,) int in [0, n_listeners)
-    game_ids:       jnp.ndarray  # (N,) int in [0, n_games)
-    image_ids:      jnp.ndarray  # (N,) int in [0, n_images)
-    rep_num:        jnp.ndarray  # (N,) int
-    n_listeners:    int
-    n_games:        int
-    n_images:       int
+    utterance_emb:   jnp.ndarray        # (N, D) CLIP text, L2-normalized
+    option_embs:     jnp.ndarray        # (N, 12, D) CLIP image, L2-normalized
+    target_idx:      jnp.ndarray        # (N,) int — index of target in option_embs[n]
+    selected_idx:    jnp.ndarray        # (N,) int — index of listener's pick
+    listener_ids:    jnp.ndarray        # (N,) int in [0, n_listeners)
+    game_ids:        jnp.ndarray        # (N,) int in [0, n_games)
+    image_ids:       jnp.ndarray        # (N,) int in [0, n_images) — target image only
+    rep_num:         jnp.ndarray        # (N,) int
+    n_listeners:     int
+    n_games:         int
+    n_images:        int
+    option_image_ids: Optional[jnp.ndarray] = None  # (N, 12) index into all_image_embs
+    all_image_embs:   Optional[jnp.ndarray] = None  # (n_all_images, D) CLIP init for learnable embs
 
 
 def build_trial_batch(
-    utterance_emb:  jnp.ndarray,
-    option_embs:    jnp.ndarray,
-    target_idx:     jnp.ndarray,
-    selected_idx:   jnp.ndarray,
-    listener_ids:   jnp.ndarray,
-    game_ids:       jnp.ndarray,
-    image_ids:      jnp.ndarray,
-    rep_num:        jnp.ndarray,
-    n_listeners:    int,
-    n_games:        int,
-    n_images:       int,
+    utterance_emb:    jnp.ndarray,
+    option_embs:      jnp.ndarray,
+    target_idx:       jnp.ndarray,
+    selected_idx:     jnp.ndarray,
+    listener_ids:     jnp.ndarray,
+    game_ids:         jnp.ndarray,
+    image_ids:        jnp.ndarray,
+    rep_num:          jnp.ndarray,
+    n_listeners:      int,
+    n_games:          int,
+    n_images:         int,
+    option_image_ids: Optional[jnp.ndarray] = None,
+    all_image_embs:   Optional[jnp.ndarray] = None,
 ) -> TrialBatch:
     """
     Validates inputs and returns a TrialBatch.
@@ -53,6 +58,8 @@ def build_trial_batch(
         n_listeners=n_listeners,
         n_games=n_games,
         n_images=n_images,
+        option_image_ids=option_image_ids,
+        all_image_embs=all_image_embs,
     )
 
 
@@ -92,6 +99,10 @@ def build_trial_batch_from_df(
     listener_enc = {l: i for i, l in enumerate(sorted(df["listener_id"].unique()))}
     image_enc = {img: i for i, img in enumerate(sorted(df["image_id"].unique()))}
 
+    # Canonical table of all images that appear in option sets (for learnable embeddings).
+    all_option_ids = sorted({img for opts in df["option_set"] for img in opts})
+    all_img_enc = {img: i for i, img in enumerate(all_option_ids)}
+
     utterance_emb = np.stack([utterance_embeddings[u] for u in df["utterance"]])
     option_embs = np.stack([
         np.stack([image_embeddings[img] for img in row["option_set"]])
@@ -105,6 +116,11 @@ def build_trial_batch_from_df(
         [row["option_set"].index(row["selected_image_id"]) for _, row in df.iterrows()],
         dtype=np.int32,
     )
+    option_image_ids = np.array(
+        [[all_img_enc[img] for img in row["option_set"]] for _, row in df.iterrows()],
+        dtype=np.int32,
+    )
+    all_image_embs = np.stack([image_embeddings[img] for img in all_option_ids])
 
     return build_trial_batch(
         utterance_emb=jnp.array(utterance_emb),
@@ -118,4 +134,6 @@ def build_trial_batch_from_df(
         n_listeners=len(listener_enc),
         n_games=len(game_enc),
         n_images=len(image_enc),
+        option_image_ids=jnp.array(option_image_ids),
+        all_image_embs=jnp.array(all_image_embs),
     )
