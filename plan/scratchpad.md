@@ -89,9 +89,9 @@ from the module. Don't `pip install -e .` on the cluster.
 - [ ] Update the integration test fixtures (5-game parquet + npz):
   `.venv/bin/python script/run_pipeline.py --config quick_cpu`
 - [ ] **Held-out log-likelihood eval** (game-level CV): `script/run_eval.py` is implemented.
-  Run at full steps on cluster to see whether learnable embeddings generalize:
-  `sbatch script/cluster_eval.sh` (or `.venv/bin/python script/run_eval.py --n-folds 5 --n-steps 5000`).
-  Baseline (uniform): -2.485 nats. At 20 steps: -2.361 nats (marginal). Full-step result unknown.
+  Runs automatically after pipeline in `sbatch script/cluster_job.sh`. Output saved to
+  `results/run_<JOBID>/eval_listener_cv.csv`. Baseline (uniform): -2.485 nats.
+  At 20 steps: -2.361 nats (marginal). Full-step result unknown.
 - [ ] Generate combined.html for run_24092953 once eval direction is clear.
 
 ### Visualisation — remaining improvements

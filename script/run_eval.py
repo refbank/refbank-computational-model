@@ -34,7 +34,6 @@ log = logging.getLogger(__name__)
 STUDY_ID = "hawkins2020_characterizing_cued"
 DATA_DIR = "data"
 CACHE_DIR = os.path.join(DATA_DIR, "embeddings")
-RESULTS_DIR = "results"
 
 
 def main():

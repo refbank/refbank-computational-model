@@ -57,7 +57,8 @@ apptainer exec --nv \
     bash -c "cd /project && PYTHONPATH=/project python script/run_eval.py \
         --n-splits 20 \
         --n-steps 5000 \
-        --seed 0"
+        --seed 0 \
+        --output-dir $OUTPUT_DIR"
 
 echo "Eval done: $(date)"
-echo "CV results in: results/eval_listener_cv.csv"
+echo "CV results in: $OUTPUT_DIR/eval_listener_cv.csv"
