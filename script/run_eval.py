@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--n-splits", type=int, default=20)
     parser.add_argument("--n-steps", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--output-dir", required=True, help="Directory to write eval_listener_cv.csv")
     args = parser.parse_args()
 
     parquet = os.path.join(DATA_DIR, f"{STUDY_ID}_joined.parquet")
@@ -88,8 +89,8 @@ def main():
     )
     log.info("Baseline (uniform): %.4f nats", -np.log(12))
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    out = os.path.join(RESULTS_DIR, "eval_listener_cv.csv")
+    os.makedirs(args.output_dir, exist_ok=True)
+    out = os.path.join(args.output_dir, "eval_listener_cv.csv")
     results.to_csv(out, index=False)
     log.info("Saved → %s", out)
 
