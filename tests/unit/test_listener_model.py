@@ -15,16 +15,13 @@ from code.models.literal_listener import (
 )
 
 
-def _make_batch(N=10, D=8, n_listeners=2, n_all_images=12, rng=None):
+def _make_batch(N=10, D=8, n_listeners=2, rng=None):
     if rng is None:
         rng = np.random.default_rng(0)
     utt = rng.standard_normal((N, D)).astype(np.float32)
     utt /= np.linalg.norm(utt, axis=1, keepdims=True)
-    all_img_embs = rng.standard_normal((n_all_images, D)).astype(np.float32)
-    all_img_embs /= np.linalg.norm(all_img_embs, axis=1, keepdims=True)
-    # Each trial uses the first 12 images; option_image_ids indexes into all_img_embs.
-    option_image_ids = np.tile(np.arange(12, dtype=np.int32), (N, 1))
-    imgs = all_img_embs[option_image_ids]  # (N, 12, D)
+    imgs = rng.standard_normal((N, 12, D)).astype(np.float32)
+    imgs /= np.linalg.norm(imgs, axis=-1, keepdims=True)
     return build_trial_batch(
         utterance_emb=jnp.array(utt),
         option_embs=jnp.array(imgs),
@@ -37,8 +34,6 @@ def _make_batch(N=10, D=8, n_listeners=2, n_all_images=12, rng=None):
         n_listeners=n_listeners,
         n_games=1,
         n_images=1,
-        option_image_ids=jnp.array(option_image_ids),
-        all_image_embs=jnp.array(all_img_embs),
     )
 
 
@@ -91,8 +86,6 @@ def test_compute_success_probs_high_for_clear_target():
     utt = np.tile(imgs[target_idx], (N, 1))
     option_embs = np.tile(imgs[np.newaxis], (N, 1, 1))
 
-    all_image_embs = imgs  # (12, D) — the canonical embedding table
-    option_image_ids = np.tile(np.arange(12, dtype=np.int32), (N, 1))
     batch = build_trial_batch(
         utterance_emb=jnp.array(utt),
         option_embs=jnp.array(option_embs),
@@ -105,8 +98,6 @@ def test_compute_success_probs_high_for_clear_target():
         n_listeners=1,
         n_games=1,
         n_images=1,
-        option_image_ids=jnp.array(option_image_ids),
-        all_image_embs=jnp.array(all_image_embs),
     )
     # High beta → sharp discrimination
     fit = ListenerFit(
@@ -143,82 +134,3 @@ def test_save_load_listener_fit_roundtrip(tmp_path):
     assert loaded.sigma_beta == fit.sigma_beta
 
 
-# ---------------------------------------------------------------------------
-# Learnable image embedding tests
-# ---------------------------------------------------------------------------
-
-def test_listener_model_registers_image_emb_param():
-    """literal_listener_model must register image_emb_loc as a numpyro param."""
-    import numpyro
-    batch = _make_batch()
-    trace = numpyro.handlers.trace(
-        numpyro.handlers.seed(literal_listener_model, rng_seed=0)
-    ).get_trace(batch)
-    assert "image_emb_loc" in trace, "Model must register image_emb_loc param"
-    assert trace["image_emb_loc"]["type"] == "param"
-
-
-def test_listener_fit_has_image_emb_loc():
-    """ListenerFit must have an image_emb_loc field."""
-    image_emb_loc = np.random.default_rng(0).standard_normal((12, 8)).astype(np.float32)
-    fit = ListenerFit(
-        beta_loc=np.zeros(2),
-        beta_scale=np.ones(2),
-        mu_beta=0.0,
-        sigma_beta=1.0,
-        image_emb_loc=image_emb_loc,
-    )
-    assert hasattr(fit, "image_emb_loc")
-    np.testing.assert_array_equal(fit.image_emb_loc, image_emb_loc)
-
-
-def test_compute_success_probs_uses_fit_image_emb_loc():
-    """compute_success_probs must use fit.image_emb_loc, not batch.option_embs."""
-    rng = np.random.default_rng(42)
-    N, D = 10, 8
-    # Batch with specific option_embs (CLIP init)
-    batch = _make_batch(N=N, D=D, n_listeners=1, rng=rng)
-
-    # A learned embedding table that differs from the CLIP init
-    learned_embs = rng.standard_normal((12, D)).astype(np.float32)
-    learned_embs /= np.linalg.norm(learned_embs, axis=1, keepdims=True)
-
-    fit = ListenerFit(
-        beta_loc=np.array([np.log(2.0)]),
-        beta_scale=np.array([0.01]),
-        mu_beta=np.log(2.0),
-        sigma_beta=1.0,
-        image_emb_loc=learned_embs,
-    )
-
-    probs = compute_success_probs(fit, batch)
-
-    # Manually compute expected result using learned_embs via option_image_ids
-    beta = np.exp(fit.beta_loc[0])
-    ids = np.array(batch.option_image_ids)          # (N, 12)
-    embs = learned_embs[ids]                         # (N, 12, D) — already normalized
-    cos_sims = np.einsum("nd,nkd->nk", np.array(batch.utterance_emb), embs)
-    logits = beta * cos_sims
-    logits -= logits.max(axis=1, keepdims=True)
-    exp_l = np.exp(logits)
-    manual_probs = exp_l[:, 0] / exp_l.sum(axis=1)
-
-    np.testing.assert_allclose(probs, manual_probs, atol=1e-5,
-        err_msg="compute_success_probs must use fit.image_emb_loc not batch.option_embs")
-
-
-def test_save_load_listener_fit_roundtrip_with_image_embs(tmp_path):
-    """save/load must preserve image_emb_loc."""
-    image_emb_loc = np.random.default_rng(0).standard_normal((14, 8)).astype(np.float32)
-    fit = ListenerFit(
-        beta_loc=np.array([1.0, 2.0]),
-        beta_scale=np.array([0.1, 0.2]),
-        mu_beta=0.5,
-        sigma_beta=1.2,
-        image_emb_loc=image_emb_loc,
-    )
-    path = str(tmp_path / "listener_fit_embs.npz")
-    save_listener_fit(fit, path)
-    loaded = load_listener_fit(path)
-    assert loaded.image_emb_loc is not None
-    np.testing.assert_array_equal(loaded.image_emb_loc, fit.image_emb_loc)

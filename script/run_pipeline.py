@@ -46,6 +46,11 @@ from code.models.literal_listener import (
     save_listener_fit,
     load_listener_fit,
 )
+from code.models.image_projection import (
+    fit_image_projection,
+    project_batch,
+    save_image_projection,
+)
 from code.models.conventional_speaker import (
     compute_r1_average,
     fit_convention,
@@ -254,6 +259,18 @@ def main() -> None:
         "Batch: %d trials  %d games  %d images  %d listeners",
         batch.utterance_emb.shape[0], batch.n_games, batch.n_images, batch.n_listeners,
     )
+
+    # --- Stage 0: image projection (fit on rep 1 only) ---
+    t0 = time.time()
+    rep1_df = df[df["rep_num"] == 1].reset_index(drop=True)
+    rep1_batch = build_trial_batch_from_df(rep1_df, image_embs, text_embs)
+    log.info("Fitting image projection on %d rep-1 trials...", len(rep1_df))
+    projection = fit_image_projection(rep1_batch, rank=8, n_steps=3000)
+    log.info("Image projection done (%s)", _elapsed(t0))
+    batch = project_batch(projection, batch)
+    if output_dir is not None:
+        save_image_projection(projection, os.path.join(output_dir, "image_projection.npz"))
+        log.info("Saved image_projection.npz")
 
     # --- Stage 1: literal listener ---
     t0 = time.time()

@@ -5,6 +5,7 @@ import pandas as pd
 import scipy.special
 
 from code.models.literal_listener import ListenerFit, fit_listener
+from code.models.image_projection import fit_image_projection, project_batch
 from code.prep_data.pipeline import TrialBatch, build_trial_batch_from_df
 
 log = logging.getLogger(__name__)
@@ -48,18 +49,7 @@ def listener_log_likelihood(fit: ListenerFit, batch: TrialBatch) -> np.ndarray:
     Returns (N,) array of per-trial log-probabilities (all ≤ 0).
     """
     beta = np.exp(fit.mu_beta)
-
-    if fit.image_emb_loc is not None:
-        if batch.option_image_ids is None:
-            raise ValueError(
-                "batch.option_image_ids must be set when fit.image_emb_loc is present"
-            )
-        option_embs = fit.image_emb_loc[np.array(batch.option_image_ids)]  # (N, 12, D)
-        norms = np.linalg.norm(option_embs, axis=-1, keepdims=True)
-        option_embs = option_embs / norms
-    else:
-        option_embs = np.array(batch.option_embs)
-
+    option_embs = np.array(batch.option_embs)
     cos_sims = np.einsum("nd,nkd->nk", np.array(batch.utterance_emb), option_embs)
     logits = beta * cos_sims  # (N, 12)
 
@@ -101,6 +91,13 @@ def cross_val_listener(
 
         train_batch = build_trial_batch_from_df(train_df, image_embeddings, utterance_embeddings)
         test_batch = build_trial_batch_from_df(test_df, image_embeddings, utterance_embeddings)
+
+        # Fit projection on rep-1 trials from training games, then apply to both splits.
+        rep1_df = train_df[train_df["rep_num"] == 1].reset_index(drop=True)
+        rep1_batch = build_trial_batch_from_df(rep1_df, image_embeddings, utterance_embeddings)
+        projection = fit_image_projection(rep1_batch, rank=8, n_steps=3000, seed=seed + split_i)
+        train_batch = project_batch(projection, train_batch)
+        test_batch = project_batch(projection, test_batch)
 
         fit = fit_listener(train_batch, n_steps=n_steps, seed=seed + split_i)
         log.info(

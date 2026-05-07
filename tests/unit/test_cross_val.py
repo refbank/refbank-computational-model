@@ -4,7 +4,7 @@ import pytest
 
 from code.prep_data.pipeline import build_trial_batch
 from code.models.literal_listener import ListenerFit
-from code.eval.cross_val import game_level_splits, listener_log_likelihood, cross_val_listener
+from code.eval.cross_val import game_level_splits, listener_log_likelihood
 
 
 def _make_batch(N=60, D=8, n_games=10, n_listeners=10, n_all_images=12, rng=None):
@@ -35,17 +35,12 @@ def _make_batch(N=60, D=8, n_games=10, n_listeners=10, n_all_images=12, rng=None
     )
 
 
-def _make_fit(mu_beta=1.0, D=8, n_all_images=12, rng=None):
-    if rng is None:
-        rng = np.random.default_rng(1)
-    image_emb_loc = rng.standard_normal((n_all_images, D)).astype(np.float32)
-    image_emb_loc /= np.linalg.norm(image_emb_loc, axis=1, keepdims=True)
+def _make_fit(mu_beta=1.0, rng=None):
     return ListenerFit(
         beta_loc=np.full(5, mu_beta),
         beta_scale=np.ones(5) * 0.1,
         mu_beta=mu_beta,
         sigma_beta=0.5,
-        image_emb_loc=image_emb_loc,
     )
 
 
@@ -129,21 +124,16 @@ def test_listener_log_likelihood_values_non_positive():
 def test_listener_log_likelihood_uses_population_mu_beta():
     """Must use fit.mu_beta (population mean) not per-listener beta_loc."""
     rng = np.random.default_rng(7)
-    N, D = 60, 8
-    batch = _make_batch(N=N, D=D, rng=rng)
+    batch = _make_batch(N=60, D=8, rng=rng)
 
-    # Two fits with identical image_emb_loc but very different mu_beta.
-    # beta_loc values are the same but mu_beta differs — LL should differ.
-    img_embs = rng.standard_normal((12, D)).astype(np.float32)
-    img_embs /= np.linalg.norm(img_embs, axis=1, keepdims=True)
-
+    # Same beta_loc but different mu_beta — LL must differ.
     fit_low = ListenerFit(
         beta_loc=np.full(10, 1.0), beta_scale=np.ones(10) * 0.1,
-        mu_beta=0.0, sigma_beta=0.5, image_emb_loc=img_embs,
+        mu_beta=0.0, sigma_beta=0.5,
     )
     fit_high = ListenerFit(
         beta_loc=np.full(10, 1.0), beta_scale=np.ones(10) * 0.1,
-        mu_beta=3.0, sigma_beta=0.5, image_emb_loc=img_embs,
+        mu_beta=3.0, sigma_beta=0.5,
     )
     ll_low = listener_log_likelihood(fit_low, batch)
     ll_high = listener_log_likelihood(fit_high, batch)
@@ -152,20 +142,14 @@ def test_listener_log_likelihood_uses_population_mu_beta():
     )
 
 
-def test_listener_log_likelihood_uses_fit_image_emb_loc():
-    """LL must differ when fit.image_emb_loc differs (even with same mu_beta)."""
+def test_listener_log_likelihood_uses_batch_option_embs():
+    """LL must differ when batch.option_embs differ (with same mu_beta)."""
     rng = np.random.default_rng(9)
-    batch = _make_batch(N=60, D=8, rng=rng)
+    N, D = 60, 8
+    fit = _make_fit(mu_beta=1.0)
 
-    embs_a = rng.standard_normal((12, 8)).astype(np.float32)
-    embs_a /= np.linalg.norm(embs_a, axis=1, keepdims=True)
-    embs_b = rng.standard_normal((12, 8)).astype(np.float32)
-    embs_b /= np.linalg.norm(embs_b, axis=1, keepdims=True)
-
-    fit_a = ListenerFit(beta_loc=np.zeros(5), beta_scale=np.ones(5),
-                        mu_beta=1.0, sigma_beta=0.5, image_emb_loc=embs_a)
-    fit_b = ListenerFit(beta_loc=np.zeros(5), beta_scale=np.ones(5),
-                        mu_beta=1.0, sigma_beta=0.5, image_emb_loc=embs_b)
-    ll_a = listener_log_likelihood(fit_a, batch)
-    ll_b = listener_log_likelihood(fit_b, batch)
-    assert not np.allclose(ll_a, ll_b), "LL must depend on fit.image_emb_loc"
+    batch_a = _make_batch(N=N, D=D, rng=np.random.default_rng(1))
+    batch_b = _make_batch(N=N, D=D, rng=np.random.default_rng(2))
+    ll_a = listener_log_likelihood(fit, batch_a)
+    ll_b = listener_log_likelihood(fit, batch_b)
+    assert not np.allclose(ll_a, ll_b), "LL must depend on batch.option_embs"
